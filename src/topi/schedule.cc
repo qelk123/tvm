@@ -35,6 +35,9 @@
 #include <tvm/topi/detail/tensor_utils.h>
 #include <tvm/topi/generic/default.h>
 #include <tvm/topi/generic/extern.h>
+#include <tvm/topi/custom/bfs.h>
+#include <tvm/topi/custom/updatepi.h>
+#include <tvm/topi/custom/tensor_to_val_equal.h>
 #include <tvm/topi/generic/injective.h>
 #include <tvm/topi/rocm/dense.h>
 #include <tvm/topi/rocm/injective.h>
@@ -85,6 +88,19 @@ TVM_REGISTER_GLOBAL("topi.x86.schedule_binarize_pack").set_body([](TVMArgs args,
 TVM_REGISTER_GLOBAL("topi.x86.schedule_binary_dense").set_body([](TVMArgs args, TVMRetValue* rv) {
   *rv = topi::x86::schedule_binary_dense(args[0], args[1]);
 });
+
+TVM_REGISTER_GLOBAL("topi.generic.schedule_bfs").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = topi::custom::schedule_bfs(args[0], args[1]);
+});
+
+TVM_REGISTER_GLOBAL("topi.generic.schedule_update_pi").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = topi::custom::schedule_update_pi(args[0], args[1]);
+});
+
+TVM_REGISTER_GLOBAL("topi.generic.schedule_tensor_to_val_equal").set_body([](TVMArgs args, TVMRetValue* rv) {
+  *rv = topi::custom::schedule_tensor_to_val_equal(args[0], args[1]);
+});
+
 
 TVM_REGISTER_GLOBAL("topi.x86.default_schedule").set_body([](TVMArgs args, TVMRetValue* rv) {
   if (args[2]) {

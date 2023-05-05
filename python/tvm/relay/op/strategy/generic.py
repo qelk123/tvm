@@ -1887,6 +1887,157 @@ def wrap_compute_unique(topi_compute):
     return _compute_unique
 
 
+def wrap_compute_custombfs(topi_compute):
+    """Wrap scanop style topi compute"""
+    def _compute_custombfs(attrs, inputs, _):
+        return [topi_compute(inputs[0],inputs[1],inputs[2],inputs[3])]
+    return _compute_custombfs
+
+
+
+@override_native_generic_func("custom.bfs_strategy")
+def bfs_strategy(attrs, inputs, out_type, target):
+    """custombfs generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_custombfs(topi.custom.bfs), #上面写的compute
+        wrap_topi_schedule(topi.generic.schedule_extern),
+        name="custombfs.generic",
+    )
+    # strategy.add_implementation(
+    #     wrap_compute_custombfs(topi.custom.bfs), #上面写的compute
+    #     wrap_topi_schedule(topi.generic.manual_schedule),
+    #     name="cumsum.generic",
+    #     plevel=99,
+    # )
+    return strategy
+
+
+def wrap_compute_updatepi(topi_compute):
+    """Wrap scanop style topi compute"""
+    def _compute_updatepi(attrs, inputs, _):
+        return [topi_compute(inputs[0],inputs[1],inputs[2])]
+    return _compute_updatepi
+
+
+@override_native_generic_func("custom.updatepi_strategy")
+def updatepi_strategy(attrs, inputs, out_type, target):
+    """custombfs generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_updatepi(topi.custom.updatepi), #上面写的compute
+        wrap_topi_schedule(topi.generic.schedule_extern),
+        name="updatepi.generic",
+    )
+    # strategy.add_implementation(
+    #     wrap_compute_custombfs(topi.custom.bfs), #上面写的compute
+    #     wrap_topi_schedule(topi.generic.manual_schedule),
+    #     name="cumsum.generic",
+    #     plevel=99,
+    # )
+    return strategy
+
+
+def wrap_compute_tensor_to_val_equal(topi_compute):
+    """Wrap scanop style topi compute"""
+    def _compute_tensor_to_val_equal(attrs, inputs, _):
+        return [topi_compute(inputs[0],inputs[1])]
+    return _compute_tensor_to_val_equal
+
+
+@override_native_generic_func("custom.tensor_to_val_equal_strategy")
+def tensor_to_val_equal_strategy(attrs, inputs, out_type, target):
+    """custombfs generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_tensor_to_val_equal(topi.custom.tensor_to_val_equal), #上面写的compute
+        wrap_topi_schedule(topi.generic.schedule_extern),
+        name="compute_tensor_to_val_equal.generic",
+    )
+    # strategy.add_implementation(
+    #     wrap_compute_custombfs(topi.custom.bfs), #上面写的compute
+    #     wrap_topi_schedule(topi.generic.manual_schedule),
+    #     name="cumsum.generic",
+    #     plevel=99,
+    # )
+    return strategy
+
+def wrap_compute_matrix_to_val(topi_compute):
+    """Wrap scanop style topi compute"""
+    def _compute_matrix_to_val(attrs, inputs, _):
+        return [topi_compute(inputs[0])]
+    return _compute_matrix_to_val
+
+
+@override_native_generic_func("custom.matrix_to_val_strategy")
+def matrix_to_val_strategy(attrs, inputs, out_type, target):
+    """custombfs generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_matrix_to_val(topi.custom.matrix_to_val), #上面写的compute
+        wrap_topi_schedule(topi.generic.schedule_extern),
+        name="compute_matrix_to_val.generic",
+    )
+    # strategy.add_implementation(
+    #     wrap_compute_custombfs(topi.custom.bfs), #上面写的compute
+    #     wrap_topi_schedule(topi.generic.manual_schedule),
+    #     name="cumsum.generic",
+    #     plevel=99,
+    # )
+    return strategy
+
+
+def wrap_compute_dynamic_output_tensor(topi_compute):
+    """Wrap scanop style topi compute"""
+    def _compute_dynamic_output_tensor(attrs, inputs, _):
+        return [topi_compute(inputs[0])]
+    return _compute_dynamic_output_tensor
+
+
+@override_native_generic_func("custom.dynamic_output_tensor_strategy")
+def dynamic_output_tensor_strategy(attrs, inputs, out_type, target):
+    """custombfs generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_dynamic_output_tensor(topi.custom.dynamic_output_tensor), #上面写的compute
+        wrap_topi_schedule(topi.generic.schedule_extern),
+        name="compute_dynamic_output_tensor.generic",
+    )
+    # strategy.add_implementation(
+    #     wrap_compute_custombfs(topi.custom.bfs), #上面写的compute
+    #     wrap_topi_schedule(topi.generic.manual_schedule),
+    #     name="cumsum.generic",
+    #     plevel=99,
+    # )
+    return strategy
+
+
+def wrap_compute_same_output_tensor(topi_compute):
+    """Wrap scanop style topi compute"""
+    def _compute_same_output_tensor(attrs, inputs, _):
+        return [topi_compute(inputs[0])]
+    return _compute_same_output_tensor
+
+
+@override_native_generic_func("custom.same_output_tensor_strategy")
+def same_output_tensor_strategy(attrs, inputs, out_type, target):
+    """custombfs generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_same_output_tensor(topi.custom.same_output_tensor), #上面写的compute
+        wrap_topi_schedule(topi.generic.schedule_extern),
+        name="compute_same_output_tensor.generic",
+    )
+    # strategy.add_implementation(
+    #     wrap_compute_custombfs(topi.custom.bfs), #上面写的compute
+    #     wrap_topi_schedule(topi.generic.manual_schedule),
+    #     name="cumsum.generic",
+    #     plevel=99,
+    # )
+    return strategy
+
+
+
 @override_native_generic_func("unique_strategy")
 def unique_strategy(attrs, inputs, out_type, target):
     """unique generic strategy"""

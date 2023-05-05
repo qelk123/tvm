@@ -51,6 +51,8 @@
 #include "../op/memory/memory.h"
 #include "../transforms/meta_schedule_layout_rewrite.h"
 #include "../transforms/pass_utils.h"
+#include "../../support/utils.h"
+
 #include "utils.h"
 
 namespace tvm {
@@ -134,8 +136,8 @@ Array<IndexExpr> GetShape(const Array<IndexExpr>& shape) {
 // Lowers Relay primitive Function to TE Compute
 class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor>> {
  public:
-  explicit LowerToTECompute(Target target)
-      : target_(target), device_copy_op_(Op::Get("device_copy")) {}
+  explicit LowerToTECompute(Target target,bool use_tvm_script_kernel=false)
+      : target_(target), device_copy_op_(Op::Get("device_copy")),bypass_te(use_tvm_script_kernel) {}
 
   Array<te::Tensor> Lower(const Function& relay_func,
                           std::function<std::string(std::string)> renamer) {
@@ -217,6 +219,9 @@ class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor
   }
 
   Array<te::Tensor> VisitExpr_(const CallNode* call_node) final {
+  Array<te::Tensor> outputs;
+  ICHECK(call_node->op.as<OpNode>()) << "Primitive function only allows call into primitive ops";
+  Op op = Downcast<Op>(call_node->op);
     static auto flower_call = tvm::runtime::Registry::Get("relay.backend.lower_call");
     ICHECK(flower_call) << "relay.backend.lower_call is not registered.";
 
@@ -237,17 +242,16 @@ class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor
           << " were provided.";
     }
 
-    ICHECK(call_node->op.as<OpNode>()) << "Primitive function only allows call into primitive ops";
-    Op op = Downcast<Op>(call_node->op);
+
 
     // TODO(mbs): device_copy cleanup
     ICHECK_NE(op, device_copy_op_) << "device_copy cannot be lowered";
 
     LoweredOutput lowered_out = (*flower_call)(GetRef<Call>(call_node), inputs, target_);
-    Array<te::Tensor> outputs = lowered_out->outputs;
+    outputs = lowered_out->outputs;
     op_implementations_[op.operator->()] = lowered_out->implementation;
 
-    if (outputs.size() != 1) {
+    if (!bypass_te&&outputs.size() != 1) {
       const auto* tuple_type = call_node->checked_type().as<TupleTypeNode>();
       ICHECK(tuple_type) << "Expected output to be a tuple type "
                          << PrettyPrint(call_node->checked_type());
@@ -302,6 +306,7 @@ class LowerToTECompute : public backend::MemoizedExprTranslator<Array<te::Tensor
 
  private:
   tvm::Target target_;
+  bool bypass_te;
   std::ostringstream readable_name_stream_;
   // Index of the global constants
   static int const_index;
@@ -322,19 +327,23 @@ class ScheduleBuilder : public ExprVisitor {
       meta_schedule_ctx_ = meta_schedule::ApplyHistoryBest::Current();
       CHECK(meta_schedule_ctx_.defined()) << "ValueError: `use_meta_schedule` is enabled in Relay "
                                              "build, but no ApplyHistoryBest context is provided. ";
-    } else {
+    } else if(backend::IsBypassTEEnabled()){
+      use_tvm_script_kernel=true;
+    }else{
       meta_schedule_ctx_ = NullOpt;
     }
   }
 
   CachedFunc Create(const Function& relay_func, std::function<std::string(std::string)> renamer) {
-    LowerToTECompute lower_te_compute(target_);
+    // std::cout<<"FunctionNode:"<<PrettyPrint(relay_func)<<"\n";
+    LowerToTECompute lower_te_compute(target_,use_tvm_script_kernel);
     Array<te::Tensor> tensor_outs = lower_te_compute.Lower(relay_func, renamer);
     Array<te::Tensor> fn_inputs = lower_te_compute.fn_inputs_;
     VisitExpr(relay_func->body);
 
     // TODO(mbs): This should be the definitive global by which the PrimFunc is known and
     // no other GlobalVar ctors should appear inside the lowering machinery.
+    VLOG(1)<<"lower_te_compute.candidate_name_:"<<lower_te_compute.candidate_name_<<"\n";
     auto prim_fn_var = GlobalVar(renamer(lower_te_compute.candidate_name_));
     prim_fn_var->checked_type_ = relay_func->checked_type();
 
@@ -342,6 +351,7 @@ class ScheduleBuilder : public ExprVisitor {
     // between inputs and outputs, copy identity output tensors,
     // since tir lowering do not support aliasing output to input buffer.
     for (size_t i = 0; i < tensor_outs.size(); ++i) {
+      VLOG(1)<<"tensor_outs[i]:"<<tensor_outs[i]->op->name<<"\n";
       if (tensor_outs[i]->op.as<te::PlaceholderOpNode>()) {
         tensor_outs.Set(i, topi::identity(tensor_outs[i]));
       }
@@ -360,6 +370,71 @@ class ScheduleBuilder : public ExprVisitor {
         if (obj.defined()) {
           schedule = Downcast<te::Schedule>(obj);
         }
+      }
+      if(use_tvm_script_kernel){
+        if(support::EndsWith(prim_fn_var->name_hint,"custom_custombfs"))
+        {
+          static auto flower_call = tvm::runtime::Registry::Get("relay.backend.custombfs");
+          ICHECK(flower_call) << "relay.backend.custombfs is not registered.";
+
+          tir::PrimFunc result = (*flower_call)();
+          std::cout<<"relay.backend.custombfs:\n"<<PrettyPrint(result)<<"\n";
+          prim_func=result;
+        }
+        else if(support::EndsWith(prim_fn_var->name_hint,"custom_tensor_ana"))
+        {
+          static auto flower_call = tvm::runtime::Registry::Get("relay.backend.tensor_ana");
+          ICHECK(flower_call) << "relay.backend.tensor_ana is not registered.";
+
+          tir::PrimFunc result = (*flower_call)();
+          std::cout<<"relay.backend.tensor_ana:\n"<<PrettyPrint(result)<<"\n";
+          prim_func=result;
+        }
+        else if(support::EndsWith(prim_fn_var->name_hint,"split_tensor"))
+        {
+          static auto flower_call = tvm::runtime::Registry::Get("relay.backend.split_tensor");
+          ICHECK(flower_call) << "relay.backend.split_tensor is not registered.";
+
+          tir::PrimFunc result = (*flower_call)();
+          std::cout<<"relay.backend.split_tensor:\n"<<PrettyPrint(result)<<"\n";
+          prim_func=result;
+        }
+        else if(support::EndsWith(prim_fn_var->name_hint,"spmv_cpu"))
+        {
+          static auto flower_call = tvm::runtime::Registry::Get("relay.backend.spmv_cpu");
+          ICHECK(flower_call) << "relay.backend.spmv_cpu is not registered.";
+
+          tir::PrimFunc result = (*flower_call)();
+          std::cout<<"relay.backend.spmv_cpu:\n"<<PrettyPrint(result)<<"\n";
+          prim_func=result;
+        }
+        else if(support::EndsWith(prim_fn_var->name_hint,"spmv_gpu"))
+        {
+          static auto flower_call = tvm::runtime::Registry::Get("relay.backend.spmv_gpu");
+          ICHECK(flower_call) << "relay.backend.spmv_gpu is not registered.";
+
+          tir::PrimFunc result = (*flower_call)();
+          std::cout<<"relay.backend.spmv_gpu:\n"<<PrettyPrint(result)<<"\n";
+          prim_func=result;
+        }
+        else if(support::EndsWith(prim_fn_var->name_hint,"concat_vector"))
+        {
+          static auto flower_call = tvm::runtime::Registry::Get("relay.backend.concat_vector");
+          ICHECK(flower_call) << "relay.backend.concat_vector is not registered.";
+
+          tir::PrimFunc result = (*flower_call)();
+          std::cout<<"relay.backend.concat_vector:\n"<<PrettyPrint(result)<<"\n";
+          prim_func=result;
+        } 
+        else if(support::EndsWith(prim_fn_var->name_hint,"bfs_pprocess"))
+        {
+          static auto flower_call = tvm::runtime::Registry::Get("relay.backend.bfs_pprocess");
+          ICHECK(flower_call) << "relay.backend.bfs_pprocess is not registered.";
+
+          tir::PrimFunc result = (*flower_call)();
+          std::cout<<"relay.backend.bfs_pprocess:\n"<<PrettyPrint(result)<<"\n";
+          prim_func=result;
+        }                                         
       }
       if (meta_schedule_ctx_) {
         Array<te::Tensor> te_args = Concat(fn_inputs, tensor_outs);
@@ -383,6 +458,7 @@ class ScheduleBuilder : public ExprVisitor {
       // Use TOPI schedule if user specificed, or the function has no auto_scheduler schedule.
       if (!schedule.defined() && !prim_func.defined()) {
         if (anchor_op_.defined()) {
+          VLOG(1)<<"anchor_op_:"<<PrettyPrint(anchor_op_)<<"\n";
           auto anchor_impl = lower_te_compute.op_implementations_.find(anchor_op_.operator->());
           ICHECK(anchor_impl != lower_te_compute.op_implementations_.end());
           schedule = anchor_impl->second.Schedule(anchor_attrs_, tensor_outs, target_);
@@ -435,6 +511,7 @@ class ScheduleBuilder : public ExprVisitor {
   Attrs anchor_attrs_;
   int anchor_op_pattern_{0};
   bool use_auto_scheduler_;
+  bool use_tvm_script_kernel=false;
   Optional<meta_schedule::ApplyHistoryBest> meta_schedule_ctx_;
 };
 
@@ -447,6 +524,8 @@ class ScheduleBuilder : public ExprVisitor {
  */
 CachedFunc PrimFuncFor(const Function& source_func, const Target& target,
                        std::function<std::string(std::string)> renamer) {
+    VLOG(1) << "PrimFuncFor2!";
+
   return ScheduleBuilder(target).Create(source_func, renamer);
 }
 

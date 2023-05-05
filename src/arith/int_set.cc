@@ -74,7 +74,7 @@ IntervalSet Intersect(Analyzer* analyzer, IntervalSet a, IntervalSet b) {
 IntervalSet Union(Analyzer* analyzer, IntervalSet a, IntervalSet b) {
   if (a->IsEmpty()) return b;
   if (b->IsEmpty()) return a;
-  PrimExpr max_value = max(a->max_value, b->max_value);
+  PrimExpr max_value = max(a->max_value, b->max_value);//对于两个loadbufferNode是无法去比较大小的，这里需要提供新的逻辑
   PrimExpr min_value = min(a->min_value, b->min_value);
   return IntervalSet(min_value, max_value);
 }
@@ -126,7 +126,9 @@ template <>
 inline IntervalSet Combine<tir::Add>(Analyzer* analyer, IntervalSet a, IntervalSet b,
                                      DataType /* dtype */) {
   if (a->IsSinglePoint() && b->IsSinglePoint()) {
-    return IntervalSet::SinglePoint(a->min_value + b->min_value);
+    // std::cout<<"a->min_value:"<<PrettyPrint(a->min_value)<<" b->min_value:"<<PrettyPrint(b->min_value)<<"\n";
+    Analyzer ana;
+    return IntervalSet::SinglePoint(ana.Simplify(a->min_value + b->min_value));
   }
   if (a->IsEmpty()) return a;
   if (b->IsEmpty()) return b;
@@ -380,14 +382,18 @@ class IntervalSetEvaluator : public ExprFunctor<IntervalSet(const PrimExpr&)> {
   IntervalSet VisitExpr_(const VarNode* op) final {
     Var var = GetRef<Var>(op);
     auto it = dom_map_.find(var);
-    if (it != dom_map_.end()) {
+    std::string a=std::string(var.get()->name_hint);
+    if (it != dom_map_.end()&&!already_set.count(a)) {
+      already_set.insert(a);
       IntervalSet res = ToIntervalSet((*it).second);
       if (res->min_value.same_as(var) && res->max_value.same_as(var)) {
         return res;
       }
       // recursively evaluate mapped result
       // in case the domain contains variables to be relaxed.
-      return Eval(res);
+      auto result=Eval(res);
+      already_set.erase(a);
+      return result;
     } else {
       return IntervalSet::SinglePoint(var);
     }
@@ -469,21 +475,68 @@ class IntervalSetEvaluator : public ExprFunctor<IntervalSet(const PrimExpr&)> {
   }
 
   IntervalSet VisitExpr_(const BufferLoadNode* op) final {
-    if (!(op->dtype.is_int() || op->dtype.is_uint())) {
-      DLOG(WARNING) << "cannot evaluate set BufferLoad which loads from a " << op->dtype
-                    << " buffer";
-      return IntervalSet::Everything();
-    }
-    // If the indices do not contain any variables to be relaxed, return the BufferLoad itself.
-    // Otherwise return `IntervalSet::everything()` since we have no knowledge on the buffer data.
-    for (const PrimExpr& index : op->indices) {
-      if (UsesVar(index, [dom_map = &this->dom_map_](const VarNode* var) {
-            return dom_map->find(GetRef<Var>(var)) != dom_map->end();
-          })) {
-        return IntervalSet::Everything();
+    //     if (!(op->dtype.is_int() || op->dtype.is_uint())) {
+    //   DLOG(WARNING) << "cannot evaluate set BufferLoad which loads from a " << op->dtype
+    //                 << " buffer";
+    //   return IntervalSet::Everything();
+    // }
+    // // If the indices do not contain any variables to be relaxed, return the BufferLoad itself.
+    // // Otherwise return `IntervalSet::everything()` since we have no knowledge on the buffer data.
+    // for (const PrimExpr& index : op->indices) {
+    //   if (UsesVar(index, [dom_map = &this->dom_map_](const VarNode* var) {
+    //         return dom_map->find(GetRef<Var>(var)) != dom_map->end();
+    //       })) {
+    //     return IntervalSet::Everything();
+    //   }
+    // }
+    Array<PrimExpr> new_indices;
+    bool changed = false;
+    for(auto i:op->indices)
+    {
+      // std::cout<<"op->indices:"<<PrettyPrint(i)<<"\n";
+      IntervalSet a = this->Eval(i);
+      // std::cout<<"op->indices new:"<<PrettyPrint(a->min_value)<<"\n";
+      // if(a->min_value.same_as(a->max_value))
+      // {
+      //   i=a->min_value;
+      // }
+      new_indices.insert(new_indices.end(),a->min_value);
+      if(!a->min_value.same_as(i))
+      {
+        changed=true;
       }
     }
+    // BufferLoadNode new_op;
+    // new_op.buffer=op->buffer;
+    // new_op.indices=new_indices;
+    // ObjectPtr<BufferLoadNode> n = make_object<BufferLoadNode>(new_op);
+    if(changed)
+    { 
+      auto n = BufferLoad(op->buffer, new_indices);
+      
+      // std::cout<<"original expr:\n"<<PrettyPrint(GetRef<PrimExpr>(op))<<"\n";
+      // std::cout<<"expr lanes:"<<GetRef<PrimExpr>(op).dtype().lanes()<<"\n";
+      // std::cout<<"new expr:\n"<<PrettyPrint(GetRef<PrimExpr>(n.get()))<<"\n";
+      // std::cout<<"new expr lanes:"<<GetRef<PrimExpr>(n.get()).dtype().lanes()<<"\n";
+    return IntervalSet::SinglePoint(GetRef<PrimExpr>(n.get()));
+    }
+    else
     return IntervalSet::SinglePoint(GetRef<PrimExpr>(op));
+
+    // if (!(op->dtype.is_int() || op->dtype.is_uint())) {
+    //   DLOG(WARNING) << "cannot evaluate set BufferLoad which loads from a " << op->dtype
+    //                 << " buffer";
+    //   return IntervalSet::Everything();
+    // }
+    // // If the indices do not contain any variables to be relaxed, return the BufferLoad itself.
+    // // Otherwise return `IntervalSet::everything()` since we have no knowledge on the buffer data.
+    // for (const PrimExpr& index : op->indices) {
+    //   if (UsesVar(index, [dom_map = &this->dom_map_](const VarNode* var) {
+    //         return dom_map->find(GetRef<Var>(var)) != dom_map->end();
+    //       })) {
+    //     return IntervalSet::Everything();
+    //   }
+    // }
   }
 
   IntervalSet VisitExprDefault_(const Object* op) final {
@@ -513,6 +566,7 @@ class IntervalSetEvaluator : public ExprFunctor<IntervalSet(const PrimExpr&)> {
   // analyzer
   Analyzer* analyzer_;
   const Map<Var, IntSet>& dom_map_;
+  std::set<std::string> already_set{};
   bool eval_vec_{false};
 };
 
@@ -978,7 +1032,9 @@ IntSet EvalSet(Range r, const Map<Var, IntSet>& dom_map) {
   IntervalSetEvaluator m(&ana, dom_map);
   // Simplifying first can give tighter bounds if r->min and r->extent share variables
   PrimExpr sum = r->min + r->extent - 1;
-  auto res = m.Eval(IntervalSet(r->min, ana.Simplify(sum)));
+  // std::cout<<"min val:"<<PrettyPrint(r->min)<<"\n";
+  // std::cout<<"max val:"<<PrettyPrint(ana.Simplify(sum))<<"\n";
+  auto res = m.Eval(IntervalSet(r->min, ana.Simplify(sum)));//将原始的intervalSet通过itervar的匹配，进行替换，生成新的itervalSet（需要预取的部分）
   return std::move(res);
 }
 

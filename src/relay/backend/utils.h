@@ -549,6 +549,12 @@ inline bool IsAutoSchedulerEnabled() {
       .value();
 }
 
+inline bool IsBypassTEEnabled() {
+  return transform::PassContext::Current()
+      ->GetConfig<Bool>("relay.backend.use_tvm_script", Bool(false))
+      .value();
+}
+
 /*!
  * \brief Return whether the meta schedule is enabled in the pass context.
  */

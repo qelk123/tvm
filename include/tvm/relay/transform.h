@@ -183,6 +183,13 @@ TVM_DLL Pass ToBasicBlockNormalForm();
 TVM_DLL Pass ToANormalForm();
 
 /*!
+ * \brief put device op forward to maximize the parallelism between ops on different devs.
+ *
+ * \return The transformed program.
+ */
+TVM_DLL Pass Custom_device_op_forward();
+
+/*!
  * \brief ToANormalForm but on incomplete graph.
  *
  * \param expr the graph.

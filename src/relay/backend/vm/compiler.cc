@@ -908,6 +908,173 @@ void VMCompiler::Setup(const Array<Target>& raw_targets) {
   context_.virtual_devices_.push_back(config_->host_virtual_device);
 }
 
+class DelayKillMutator : public ExprMutator {
+ public:
+  DelayKillMutator(){}
+  void dump()
+  {
+    std::cout<<"------dump invoke_param_table begin------\n";
+    for(auto i:invoke_param_table)
+    {
+      std::cout<<"GlobalVarNode:"<<PrettyPrint(GetRef<GlobalVar>(i.first))<<"\n";
+      for(auto j:i.second)
+      {
+        std::cout<<" "<<GetRef<Var>(j)<<"\n";
+      }
+      std::cout<<"\n";
+    }
+    std::cout<<"------dump invoke_param_table end------\n";
+  }
+
+ private:
+  Expr VisitExpr_(const VarNode* op) final {
+    for(auto kv:var2match)
+    {
+      if(preserve[kv.first]==false)
+      {
+        for(auto var2match:kv.second)
+        {
+          if(op==var2match)
+          {
+            VLOG(1) <<"find match var node!!!\n";
+            need_insert.insert(kv.first);
+            preserve[kv.first]=true;
+          }
+        }
+      }
+    }
+    return ExprMutator::VisitExpr_(op);
+  }
+  Expr VisitExpr_(const LetNode* op) final {
+    VLOG(1) <<"into LetNode!\n";
+    GlobalVar g_val;
+    need_insert.clear();
+    //Check if current let use any var from mem_copy op
+    this->Mutate(op->value);
+    VLOG(1) <<"need_insert size:"<<need_insert.size();
+    //Check if need insert let node list before cur let node
+    if(!need_insert.empty())
+    {
+      auto tmp_insert=need_insert;
+      auto ret=ExprMutator::VisitExpr_(op);
+      for(auto item:tmp_insert)
+      {
+        for(int i=gv2let[item].size()-1;i>=0;i--)
+        {
+          VLOG(1) <<"insert!\n";
+          ret = WithFields(GetRef<Let>(gv2let[item][i]), gv2let[item][i]->var, gv2let[item][i]->value, ret);
+          std::cout<<"insert finish!\n";
+        }
+      }
+      return ret;
+    }
+    //Check if current node is cuda launch,if so try to collect kill and mem_copy op
+    auto call_ptr = op->value.as<CallNode>();
+    if(call_ptr)
+    {
+      Call inner_call = GetRef<Call>(call_ptr);
+      if(cuda_launch_match(g_val,inner_call))
+      {
+        auto l_seg=op->body.as<LetNode>();
+        auto last_l_seg=l_seg;
+        while(l_seg)
+        {
+          bool inser=false;
+          auto call = l_seg->value.as<CallNode>();
+          while(call)
+          {
+            if(call->op.as<OpNode>()->name=="memory.kill")
+            {
+              auto var = call->args[0].as<VarNode>();
+              if(std::find(invoke_param_table[g_val.get()].begin(),invoke_param_table[g_val.get()].end(),
+                            (var))!=invoke_param_table[g_val.get()].end())
+              {
+                inser=true;
+                gv2let[g_val.get()].push_back(l_seg);
+              }
+              break;
+            }
+            //call->op.as<OpNode>()->name=="on_device"
+            auto on_device_props = GetOnDeviceProps(call);
+            if(on_device_props.body.defined())
+            {
+              call=on_device_props.body.as<CallNode>();
+              continue;
+            }
+            if(call->op.as<OpNode>()->name=="device_copy")
+            {
+              auto var =call->args[0].as<VarNode>();
+              if(std::find(invoke_param_table[g_val.get()].begin(),invoke_param_table[g_val.get()].end(),
+                    (var))!=invoke_param_table[g_val.get()].end())
+              {
+                inser=true;
+                gv2let[g_val.get()].push_back(l_seg);
+                var2match[g_val.get()].push_back(l_seg->var.get());
+              }
+              break;
+            }
+            break;
+          }
+          if(inser&&l_seg->body.as<LetNode>()){
+            last_l_seg=l_seg;
+            l_seg=l_seg->body.as<LetNode>();
+          }
+          else if(!inser){
+            l_seg=last_l_seg;
+            break;
+          }
+          else{
+            break;
+          }
+        }
+        auto body=VisitExpr(l_seg->body);
+        Expr ret = WithFields(GetRef<Let>(op), op->var, op->value, body);
+        return ret;
+      }
+    }
+    return ExprMutator::VisitExpr_(op);
+  }
+
+  bool cuda_launch_match(GlobalVar & g_val,Call inner_call)
+  {
+    auto on_device_props = GetOnDeviceProps(inner_call.operator->());
+    if (on_device_props.virtual_device.defined()&&on_device_props.virtual_device->device_type()==kDLCUDA) {
+      if(auto inner_op = on_device_props.body.as<CallNode>())
+      {
+        if(inner_op->op.as<OpNode>()->name=="vm.invoke_tvm_op")
+        {
+          std::vector<const VarNode*> var_vec;
+          for(auto i:inner_op->args)
+          {
+            if(auto tuple_arg = i.as<TupleNode>())
+            {
+              for(auto j:tuple_arg->fields)
+              {
+                if(j.as<VarNode>())
+                  var_vec.push_back(j.as<VarNode>());
+              }
+            }
+          }
+          g_val=Downcast<GlobalVar>(inner_op->args[0]);
+          invoke_param_table[g_val.get()]=var_vec;
+          preserve[g_val.get()]=false;
+          std::cout<<"find cuda launch!\n"<<"\n";
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  std::set<const GlobalVarNode*> need_insert;
+  std::unordered_map<const GlobalVarNode*, std::vector<const VarNode*>> invoke_param_table;
+  std::unordered_map<const GlobalVarNode*, bool> preserve;
+  std::unordered_map<const GlobalVarNode*, std::vector<const LetNode*>> gv2let;
+  std::unordered_map<const GlobalVarNode*, std::vector<const VarNode*>> var2match;
+};
+
+
+
 void VMCompiler::LowerImpl(IRModule mod) {
   // Run the optimizations necessary to target the VM.
   context_.module = OptimizeModuleImpl(std::move(mod));
@@ -919,6 +1086,36 @@ void VMCompiler::LowerImpl(IRModule mod) {
   // Next we get ready by allocating space for
   // the global state.
   exec_->functions.resize(num_functions);
+  auto update_module=context_.module->ShallowCopy();
+  DelayKillMutator delaykill;
+  std::vector<std::pair<GlobalVar, Function> > updated_func_vec;
+  for(auto i:context_.module->functions)
+  {
+    if(i.second.as<FunctionNode>())
+    {
+      std::cout<<"before delay kill:\n"<<PrettyPrint(i.second)<<"\n";
+      auto updated_func = delaykill.VisitExpr(i.second);
+      std::cout<<"after delay kill:\n"<<PrettyPrint(updated_func)<<"\n";
+
+      updated_func_vec.push_back({i.first,Downcast<Function>(updated_func)});
+    }
+  }
+  // IRModule tmp_module = IRModule({}, {}, {}, {}, context_.module->attrs);
+  for (const auto& pair : updated_func_vec) {
+    context_.module->Add(pair.first, pair.second, true);
+  //   std::cout<<"\n------visualizer start-------\n";
+  //   tmp_module->Add(pair.first, pair.second, true);
+  //   static auto flower_call = tvm::runtime::Registry::Get("relay.visualizer");
+  //   ICHECK(flower_call) << "relay.visualizer is not registered.";
+  //   // std::cout<<"mod print:\n"<<PrettyPrint(context_.module)<<"\n";
+  //   {
+  //     (*flower_call)(tmp_module);
+  //   }
+  //   std::cout<<"\n------visualizer end-------\n";
+  }
+
+
+  // delaykill.dump();
 
   for (const auto& pair : context_.module->functions) {
     auto gvar = pair.first;
@@ -928,6 +1125,9 @@ void VMCompiler::LowerImpl(IRModule mod) {
         continue;
       }
       auto func = GetRef<Function>(n);
+      // if(gvar->name_hint=="main")
+      //   func = function;
+
       VMFunctionCompiler func_compiler(&context_, config_->host_virtual_device);
       auto vm_func = func_compiler.Compile(gvar, func);
 
@@ -1094,6 +1294,11 @@ IRModule VMCompiler::OptimizeModuleImpl(IRModule mod) {
   }
 
   pass_seqs.push_back(transform::ToANormalForm());
+  if(transform::PassContext::Current()
+      ->GetConfig<Bool>("relay.transform.device_op_forward", Bool(false))
+      .value())
+  pass_seqs.push_back(transform::Custom_device_op_forward());
+  //maybe we could insert here
   pass_seqs.push_back(transform::InferType());
   pass_seqs.push_back(transform::LambdaLift());
 
@@ -1121,7 +1326,7 @@ IRModule VMCompiler::OptimizeModuleImpl(IRModule mod) {
   // pass. This is because memory allocation pass will insert `invoke_tvm_op`
   // and we use these ops to invoke the symbols in the module generated by
   // external codegen.
-  pass_seqs.push_back(transform::Inline());
+  // pass_seqs.push_back(transform::Inline());
 
   pass_seqs.push_back(MemoryOpt(config_));
   pass_seqs.push_back(transform::InferType());
