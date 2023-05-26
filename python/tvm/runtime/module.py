@@ -490,7 +490,7 @@ class Module(object):
                     assert module.type_key == "llvm" or module.type_key == "static_library"
                     object_format = "o"
             path_obj = os.path.join(workspace_dir, f"lib{index}.{object_format}")
-            module.save(path_obj)
+            module.save(path_obj)#save to file
             files.append(path_obj)
             is_system_lib = (
                 module.type_key == "llvm" and module.get_function("__tvm_is_system_module")()
@@ -516,7 +516,7 @@ class Module(object):
             if enabled("llvm") and llvm_target_string:
                 path_obj = os.path.join(workspace_dir, f"devc.{object_format}")
                 m = _ffi_api.ModulePackImportsToLLVM(self, is_system_lib, llvm_target_string)
-                m.save(path_obj)
+                m.save(path_obj)#all import module to binary and form a llvm module
                 files.append(path_obj)
             else:
                 path_cc = os.path.join(workspace_dir, "devc.c")
@@ -584,7 +584,7 @@ def load_module(path, fmt=""):
     if os.path.isfile(path):
         path = os.path.realpath(path)
     else:
-        raise ValueError("cannot find file %s" % path)
+        raise ValueError("cannot find file %s, you should compile at least once" % path)
 
     # High level handling for .o and .tar file.
     # We support this to be consistent with RPC module load.
