@@ -104,7 +104,7 @@ def _server_env(load_library, work_path=None):
         elif path.endswith(".dylib") or path.endswith(".so"):
             pass
         else:
-            raise RuntimeError("Do not know how to link %s" % file_name)
+            raise RuntimeError(f"Do not know how to link {file_name}")
         logger.info("Send linked module %s to client", path)
         return bytearray(open(path, "rb").read())
 
@@ -157,7 +157,7 @@ def _listen_loop(sock, port, rpc_key, tracker_addr, load_library, custom_addr):
         old_keyset = set()
         # Report resource to tracker
         if tracker_conn:
-            matchkey = base.random_key(rpc_key + ":")
+            matchkey = base.random_key(rpc_key)
             base.sendjson(tracker_conn, [TrackerCode.PUT, rpc_key, (port, matchkey), custom_addr])
             assert base.recvjson(tracker_conn) == TrackerCode.SUCCESS
         else:
@@ -182,7 +182,7 @@ def _listen_loop(sock, port, rpc_key, tracker_addr, load_library, custom_addr):
                     # regenerate match key if key is acquired but not used for a while
                     if unmatch_period_count * ping_period > unmatch_timeout + ping_period:
                         logger.info("no incoming connections, regenerate key ...")
-                        matchkey = base.random_key(rpc_key + ":", old_keyset)
+                        matchkey = base.random_key(rpc_key, cmap=old_keyset)
                         base.sendjson(
                             tracker_conn, [TrackerCode.PUT, rpc_key, (port, matchkey), custom_addr]
                         )
@@ -219,7 +219,7 @@ def _listen_loop(sock, port, rpc_key, tracker_addr, load_library, custom_addr):
                 tracker_conn.sendall(struct.pack("<i", base.RPC_TRACKER_MAGIC))
                 magic = struct.unpack("<i", base.recvall(tracker_conn, 4))[0]
                 if magic != base.RPC_TRACKER_MAGIC:
-                    raise RuntimeError("%s is not RPC Tracker" % str(tracker_addr))
+                    raise RuntimeError(f"{str(tracker_addr)} is not RPC Tracker")
                 # report status of current queue
                 cinfo = {"key": "server:" + rpc_key, "addr": (custom_addr, port)}
                 base.sendjson(tracker_conn, [TrackerCode.UPDATE_INFO, cinfo])
@@ -277,12 +277,12 @@ def _connect_proxy_loop(addr, key, load_library):
             sock.sendall(key.encode("utf-8"))
             magic = struct.unpack("<i", base.recvall(sock, 4))[0]
             if magic == base.RPC_CODE_DUPLICATE:
-                raise RuntimeError("key: %s has already been used in proxy" % key)
+                raise RuntimeError(f"key: {key} has already been used in proxy")
 
             if magic == base.RPC_CODE_MISMATCH:
                 logger.warning("RPCProxy do not have matching client key %s", key)
             elif magic != base.RPC_CODE_SUCCESS:
-                raise RuntimeError("%s is not RPC Proxy" % str(addr))
+                raise RuntimeError(f"{str(addr)} is not RPC Proxy")
             keylen = struct.unpack("<i", base.recvall(sock, 4))[0]
             remote_key = py_str(base.recvall(sock, keylen))
             opts = _parse_server_opt(remote_key.split()[1:])
@@ -299,7 +299,7 @@ def _connect_proxy_loop(addr, key, load_library):
             retry_count += 1
             logger.warning("Error encountered %s, retry in %g sec", str(err), retry_period)
             if retry_count > max_retry:
-                raise RuntimeError("Maximum retry error: last error: %s" % str(err))
+                raise RuntimeError(f"Maximum retry error: last error: {str(err)}")
             time.sleep(retry_period)
 
 
@@ -319,6 +319,8 @@ class PopenRPCServerState(object):
         load_library=None,
         custom_addr=None,
         silent=False,
+        reuse_addr=True,
+        timeout=None,
     ):
 
         # start update
@@ -332,6 +334,10 @@ class PopenRPCServerState(object):
 
         if not is_proxy:
             sock = socket.socket(base.get_addr_family((host, port)), socket.SOCK_STREAM)
+            if reuse_addr:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if timeout is not None:
+                sock.settimeout(timeout)
             self.port = None
             for my_port in range(port, port_end):
                 try:
@@ -343,7 +349,7 @@ class PopenRPCServerState(object):
                         continue
                     raise sock_err
             if not self.port:
-                raise ValueError("cannot bind to any port in [%d, %d)" % (port, port_end))
+                raise ValueError(f"cannot bind to any port in [{port}, {port_end})")
             logger.info("bind to %s:%d", host, self.port)
             sock.listen(1)
             self.sock = sock
@@ -371,6 +377,8 @@ def _popen_start_rpc_server(
     silent=False,
     no_fork=False,
     server_init_callback=None,
+    reuse_addr=True,
+    timeout=None,
 ):
     if no_fork:
         multiprocessing.set_start_method("spawn")
@@ -382,7 +390,17 @@ def _popen_start_rpc_server(
     # Popen worker to run on a separate process.
     # Create and start the server in a different thread
     state = PopenRPCServerState(
-        host, port, port_end, is_proxy, tracker_addr, key, load_library, custom_addr, silent
+        host,
+        port,
+        port_end,
+        is_proxy,
+        tracker_addr,
+        key,
+        load_library,
+        custom_addr,
+        silent,
+        reuse_addr,
+        timeout,
     )
     PopenRPCServerState.current = state
     # returns the port so that the main can get the port number.
@@ -434,6 +452,12 @@ class Server(object):
     server_init_callback: Callable, optional
         Additional initialization function when starting the server.
 
+    reuse_addr: bool, optional
+        Allows the kernel to reuse a local socket in TIME_WAIT state.
+
+    timeout: float, optional
+         set a timeout for all operations on the socket
+
     Note
     ----
     The RPC server only sees functions in the tvm namespace.
@@ -464,6 +488,8 @@ class Server(object):
         silent=False,
         no_fork=False,
         server_init_callback=None,
+        reuse_addr=True,
+        timeout=None,
     ):
         try:
             if _ffi_api.ServerLoop is None:
@@ -486,6 +512,8 @@ class Server(object):
                 silent,
                 no_fork,
                 server_init_callback,
+                reuse_addr,
+                timeout,
             ],
         )
         # receive the port
@@ -499,4 +527,7 @@ class Server(object):
             self.proc = None
 
     def __del__(self):
-        self.terminate()
+        try:
+            self.terminate()
+        except ImportError:
+            pass

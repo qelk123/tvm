@@ -45,7 +45,9 @@
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
+#if TVM_LLVM_VERSION < 170
 #include <llvm/Transforms/IPO/PassManagerBuilder.h>
+#endif
 #include <tvm/runtime/device_api.h>
 
 #include <memory>
@@ -56,7 +58,7 @@
 #include "../../runtime/cuda/cuda_module.h"
 #include "../build_common.h"
 #include "codegen_llvm.h"
-#include "llvm_common.h"
+#include "llvm_instance.h"
 
 namespace tvm {
 namespace codegen {
@@ -64,14 +66,19 @@ namespace codegen {
 // NVPTX code generator.
 class CodeGenNVPTX : public CodeGenLLVM {
  public:
-  void AddFunction(const PrimFunc& f) final {
+  llvm::Function* DeclareFunction(const GlobalVar& gvar, const PrimFunc& f) final {
     // add function as void return value
-    CodeGenLLVM::AddFunctionInternal(f, true);
+    return CodeGenLLVM::DeclareFunctionInternal(gvar, f, true);
+  }
+  void AddFunction(const GlobalVar& gvar, const PrimFunc& f) final {
+    // add function as void return value
+    CodeGenLLVM::AddFunctionInternal(gvar, f, true);
     // annotate as kernel function
+    llvm::LLVMContext* ctx = llvm_target_->GetContext();
     module_->getOrInsertNamedMetadata("nvvm.annotations")
         ->addOperand(llvm::MDNode::get(
-            *ctx_, {llvm::ValueAsMetadata::get(function_), llvm::MDString::get(*ctx_, "kernel"),
-                    llvm::ValueAsMetadata::get(ConstInt32(1))}));
+            *ctx, {llvm::ValueAsMetadata::get(function_), llvm::MDString::get(*ctx, "kernel"),
+                   llvm::ValueAsMetadata::get(ConstInt32(1))}));
   }
 
   void VisitStmt_(const AllocateNode* op) final {
@@ -118,7 +125,7 @@ class CodeGenNVPTX : public CodeGenLLVM {
         ICHECK(storage_scope.rank == runtime::StorageRank::kShared)
             << "Can only allocate shared or local memory inside kernel";
         buf = AllocateSharedMemory(op->dtype, constant_size, 3, info.alignment,
-                                   llvm::GlobalValue::PrivateLinkage);
+                                   llvm::GlobalValue::ExternalLinkage);
       }
     }
 
@@ -178,13 +185,15 @@ class CodeGenNVPTX : public CodeGenLLVM {
       return builder_->CreateCall(f, {});
     } else {
       LOG(FATAL) << "Do not support sync " << sync;
-      return nullptr;
     }
   }
 
+#if TVM_LLVM_VERSION < 160
+  // This function only works with the legacy pass manager.
   void InitPassManagerBuilder(llvm::PassManagerBuilder* builder) final {
     // Additional optimization hook to tweak the builder.
   }
+#endif
 
   void Optimize() final {
     for (auto& f : *module_) {
@@ -203,10 +212,10 @@ class CodeGenNVPTX : public CodeGenLLVM {
   llvm::Value* CreateIntrinsic(const CallNode* op) override;
 
  protected:
-  void InitTarget(llvm::TargetMachine* tm) final {
+  void InitTarget() final {
     // Maximum vector lane = float4
     native_vector_bits_ = 4 * 32;
-    CodeGenLLVM::InitTarget(tm);
+    CodeGenLLVM::InitTarget();
   }
 };
 
@@ -298,34 +307,23 @@ int GetCUDAComputeVersion(const Target& target) {
 }
 
 runtime::Module BuildNVPTX(IRModule mod, Target target) {
-  InitializeLLVM();
+  LLVMInstance llvm_instance;
+  With<LLVMTarget> llvm_target(llvm_instance, target);
+
   int compute_ver = GetCUDAComputeVersion(target);
-  std::unique_ptr<llvm::TargetMachine> tm = GetLLVMTargetMachine(target);
-  std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext());
-  // careful: cg will hold a naked pointer reference to ctx, so it should
-  // have a shorter lifetime than the ctx.
-  std::unique_ptr<CodeGenNVPTX> cg(new CodeGenNVPTX());
+  auto cg = std::make_unique<CodeGenNVPTX>();
 
-  cg->Init("TVMPTXModule", tm.get(), ctx.get(), false, false, false);
+  cg->Init("TVMPTXModule", llvm_target.get(), NullOpt, false, false);
 
-  cg->AddFunctionsOrdered(mod->functions.begin(), mod->functions.end(), [](auto& kv) {
-    ICHECK(kv.second->template IsInstance<PrimFuncNode>())
-        << "Can only lower IR Module with PrimFuncs";
-    return Downcast<PrimFunc>(kv.second);
-  });
+  cg->AddFunctionsOrdered(mod->functions.begin(), mod->functions.end());
 
+  llvm::TargetMachine* tm = llvm_target->GetOrCreateTargetMachine();
   const auto* flibdevice_path = tvm::runtime::Registry::Get("tvm_callback_libdevice_path");
   if (flibdevice_path != nullptr) {
     std::string path = (*flibdevice_path)(compute_ver);
     if (path.length() != 0) {
-      llvm::SMDiagnostic err;
-      std::unique_ptr<llvm::Module> mlib = llvm::parseIRFile(path, err, *ctx);
-      if (mlib.get() == nullptr) {
-        std::string msg(err.getMessage());
-        LOG(FATAL) << "Fail to load bitcode file " << path << "\n"
-                   << "line " << err.getLineNo() << ":" << msg;
-      }
-      mlib->setTargetTriple(tm->getTargetTriple().str());
+      std::unique_ptr<llvm::Module> mlib = llvm_instance.LoadIR(path);
+      mlib->setTargetTriple(llvm_target->GetTargetTriple());
       mlib->setDataLayout(tm->createDataLayout());
       cg->AddLinkModule(std::move(mlib));
     }
@@ -365,4 +363,5 @@ TVM_REGISTER_GLOBAL("tvm.codegen.llvm.target_nvptx")
 
 }  // namespace codegen
 }  // namespace tvm
+
 #endif  // TVM_LLVM_VERSION

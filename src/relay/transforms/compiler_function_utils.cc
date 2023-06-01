@@ -54,6 +54,8 @@ const FunctionNode* AsFunctionNode(const Expr& expr, const std::string& compiler
  */
 class Outliner : public MixedModeMutator {
  public:
+  using MixedModeMutator::VisitExpr_;
+
   Outliner(GlobalSymbolCache* cache, std::string compiler_filter, IRModule mod)
       : cache_(cache), compiler_filter_(std::move(compiler_filter)), mod_(std::move(mod)) {}
 
@@ -164,8 +166,8 @@ class OuterInliner : public MixedModeMutator {
 
   Expr Rewrite_(const CallNode* pre, const Expr& post) final {
     Call new_call = Downcast<Call>(post);
-    if (const auto* global_var_node = new_call->op.as<GlobalVarNode>()) {
-      auto global_var = GetRef<GlobalVar>(global_var_node);
+    if (auto global_var_node = new_call->op.as<GlobalVar>()) {
+      auto global_var = global_var_node.value();
       if (std::find(global_vars_.begin(), global_vars_.end(), global_var) != global_vars_.end()) {
         BaseFunc base_func = mod_->Lookup(global_var);
         const auto* function_node = base_func.as<FunctionNode>();

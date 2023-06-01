@@ -22,25 +22,25 @@ set -o pipefail
 
 # install libraries for python package on ubuntu
 pip3 install --upgrade \
+    "Pygments>=2.4.0" \
     attrs \
     cloudpickle \
     cython \
     decorator \
     mypy \
-    numpy~=1.19.5 \
+    numpy==1.21.* \
     orderedset \
     packaging \
     Pillow==9.1.0 \
     psutil \
     pytest \
-    git+https://github.com/tlc-pack/tlcpack-sphinx-addon.git@7f69989f1c6a6713d0bd7c27f8da2b48344117d3 \
+    git+https://github.com/tlc-pack/tlcpack-sphinx-addon.git@768ec1dce349fe4708f6ad68be1ebb3f3dabafa1 \
     pytest-profiling \
     pytest-xdist \
     pytest-rerunfailures==10.2 \
     requests \
     scipy \
     Jinja2 \
-    synr==0.6.0 \
     junitparser==2.4.2 \
     six \
     tornado \

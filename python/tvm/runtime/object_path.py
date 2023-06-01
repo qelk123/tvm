@@ -20,6 +20,8 @@ ObjectPath class that represents a path from a root object to one of its descend
 via attribute access, array indexing etc.
 """
 
+from typing import Optional
+
 import tvm._ffi
 from tvm.runtime import Object
 from . import _ffi_node_api
@@ -34,6 +36,7 @@ __all__ = (
     "MissingArrayElementPath",
     "MapValuePath",
     "MissingMapEntryPath",
+    "ObjectPathPair",
 )
 
 
@@ -51,8 +54,8 @@ class ObjectPath(Object):
         )
 
     @staticmethod
-    def root() -> "ObjectPath":
-        return _ffi_node_api.ObjectPathRoot()
+    def root(root_name: Optional[str] = None) -> "ObjectPath":
+        return _ffi_node_api.ObjectPathRoot(root_name)
 
     def __eq__(self, other):
         return _ffi_node_api.ObjectPathEqual(self, other)
@@ -88,6 +91,8 @@ class ObjectPath(Object):
     def missing_map_entry(self) -> "ObjectPath":
         return _ffi_node_api.ObjectPathMissingMapEntry(self)
 
+    __hash__ = Object.__hash__
+
 
 @tvm._ffi.register_object("RootPath")
 class RootPath(ObjectPath):
@@ -122,3 +127,18 @@ class MapValuePath(ObjectPath):
 @tvm._ffi.register_object("MissingMapEntryPath")
 class MissingMapEntryPath(ObjectPath):
     pass
+
+
+@tvm._ffi.register_object("ObjectPathPair")
+class ObjectPathPair(Object):
+    """
+    Pair of ObjectPaths, one for each object being tested for structural equality.
+    """
+
+    @property
+    def lhs_path(self) -> ObjectPath:
+        return _ffi_node_api.ObjectPathPairLhsPath(self)
+
+    @property
+    def rhs_path(self) -> ObjectPath:
+        return _ffi_node_api.ObjectPathPairRhsPath(self)

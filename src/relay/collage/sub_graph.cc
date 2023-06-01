@@ -325,8 +325,8 @@ std::pair<OpPatternKind, std::string> SubExprKindAndLabel(const Expr& sub_expr) 
   class Visitor : public ExprFunctor<std::pair<OpPatternKind, std::string>(const Expr&)> {
    private:
     std::pair<OpPatternKind, std::string> VisitExpr_(const CallNode* call_node) final {
-      if (const auto* op_node = call_node->op.as<OpNode>()) {
-        auto op = GetRef<Op>(op_node);
+      if (auto optional = call_node->op.as<Op>()) {
+        auto op = optional.value();
         static auto fpattern = Op::GetAttrMap<TOpPattern>("TOpPattern");
         if (fpattern.count(op) == 0) {
           VLOG(1) << "no TOpPattern known for " << op->name << ", considering opaque";
@@ -439,9 +439,7 @@ std::pair<OpPatternKind, std::string> SubGraphKindAndLabel(const DataflowGraph& 
   bool first = true;
   OpPatternKind max_kind = kElemWise;
   for (PostDfsIndex index : inside) {
-    OpPatternKind sub_kind;
-    std::string sub_label;
-    std::tie(sub_kind, sub_label) = SubExprKindAndLabel(dataflow_graph.index_to_node(index)->ref());
+    auto [sub_kind, sub_label] = SubExprKindAndLabel(dataflow_graph.index_to_node(index)->ref());
     if (!sub_label.empty()) {
       if (first) {
         first = false;
@@ -995,9 +993,7 @@ transform::Pass PartitionForTesting(Integer max_exits, Bool allow_taps, String c
     // Build the overall sub-graph, which will include any "Composite" functions as
     // well as any nodes without a label.
     IndexSet inside(dataflow_graph.size(), node_indexes);
-    OpPatternKind kind;
-    String label;
-    std::tie(kind, label) = SubGraphKindAndLabel(dataflow_graph, inside);
+    auto [kind, label] = SubGraphKindAndLabel(dataflow_graph, inside);
     SubGraph sub_graph(dataflow_graph, inside, kind, label, std::move(nested_sub_graphs));
 
     // Push the overall sub-graph into the final "Compiler" function.
