@@ -110,6 +110,8 @@ def get_valid_implementations(op, attrs, inputs, out_type, target):
         The list of all valid op implementations.
     """
     fstrategy = op.get_attr("FTVMStrategy")
+    if fstrategy is None:
+        return []
     assert fstrategy is not None, (
         f"{op.name} doesn't have an FTVMStrategy registered. You can register "
         f"one in python with `tvm.relay.op.register_strategy`."
@@ -176,7 +178,9 @@ def select_implementation(op, attrs, inputs, out_type, target, use_autotvm=True)
     """
     all_impls = get_valid_implementations(op, attrs, inputs, out_type, target)
     if len(all_impls) == 0:
-        raise RuntimeError(f"No valid {op} implementations for {target}")
+        # raise RuntimeError(f"No valid {op} implementations for {target}")
+        return None,[]
+        
     best_plevel_impl = max(all_impls, key=lambda x: x.plevel)
 
     # Disable autotvm if auto_scheduler is enabled.
