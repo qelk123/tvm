@@ -40,6 +40,7 @@ from tvm.target.codegen import llvm_lookup_intrinsic_id
 from tvm.tir import Buffer, BufferRegion, IndexMap, PrimExpr
 from tvm.tir import op as _tir_op
 from tvm.tir import type_annotation
+from tvm.tir.sparse import Axis
 
 # import tir.expr for direct ir construction to pass structural_equal comparison
 from tvm.tir.expr import (
@@ -1357,6 +1358,61 @@ def func_gen(name: str):
     return func
 
 
+"""sparse related"""
+
+def dense_fixed(length: PrimExpr, idtype: str = "int32") -> Axis:
+    """Create a dense fixed Axis.
+
+    Parameters
+    ----------
+    length : PrimExpr
+        The length of the dense index.
+
+    idtype : str
+        The data type of the index.
+
+    Returns
+    -------
+    res : PrimExpr
+        The result dense fixed index.
+    """
+    return _ffi_api.Axis('', None, length, length, length, None, None, idtype, True)
+
+
+def dense_variable(
+        parent_axis: Axis,
+        shape: Tuple[PrimExpr, PrimExpr],
+        indptr: Var,
+        idtype: str = "int32",
+    ):
+    length, nnz = shape
+    return _ffi_api.Axis('', parent_axis, length, nnz, None, indptr, None, idtype, True)
+
+
+def sparse_fixed(
+    parent_axis: Axis,
+    shape: Tuple[PrimExpr, PrimExpr],
+    indices: Var,
+    idtype: str = "int32",
+    sorted: bool = True,
+    ):
+    length, nnz_cols = shape
+    return _ffi_api.Axis(
+        '', parent_axis, length, parent_axis.nnz * nnz_cols, nnz_cols, None, indices, idtype, sorted
+    )
+
+
+def sparse_variable(
+        parent_axis: Axis,
+        shape: Tuple[PrimExpr, PrimExpr],
+        data: Tuple[Var, Var],
+        idtype: str = "int32",
+        sorted: bool = True,
+    ):
+    length, nnz = shape
+    indptr, indices = data
+    return _ffi_api.Axis('', parent_axis, length, nnz, None, indptr, indices, idtype, sorted)
+
 # pylint: disable=invalid-name
 int8 = func_gen(("Int8"))
 int16 = func_gen(("Int16"))
@@ -2216,4 +2272,9 @@ __all__ = [
     "CommReducer",
     "Range",
     "vscale",
+    # sparse related
+    "dense_fixed",
+    "dense_variable",
+    "sparse_fixed",
+    "sparse_variable",
 ]

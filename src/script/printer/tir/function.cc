@@ -141,6 +141,16 @@ TVM_STATIC_IR_FUNCTOR(IRDocsifier, vtable)
           (*f)->stmts.push_back(AssignDoc(lhs, rhs, NullOpt));
         }
       }
+      // Step 3.1 Handle `func->sp_axes`
+      for (size_t i = 0; i < func->sp_axes.size(); i ++) {
+        auto axis = func->sp_axes[i];
+        ExprDoc lhs = DefineAxis(axis, *f, d);
+        String axis_attr_str = axis -> IsSparse() ? "sparse" : "dense";
+        axis_attr_str = axis_attr_str + "_";
+        axis_attr_str = axis_attr_str + (axis->IsVariable() ? "variable" : "fixed");
+        ExprDoc rhs = TIR(d, axis_attr_str)->Call({d->AsDoc<ExprDoc>(axis->length, p->Attr("length"))});
+        (*f)->stmts.push_back(AssignDoc(lhs, rhs, NullOpt));
+      }
       // Step 4. Handle `func->body`
       Optional<tir::Block> implicit_root_block = [&]() -> Optional<tir::Block> {
         const tir::BlockRealizeNode* root_block_realize = func->body.as<tir::BlockRealizeNode>();

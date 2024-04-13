@@ -14,9 +14,5 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""FFI APIs for tvm.tir"""
-import tvm._ffi
 
-
-tvm._ffi._init_api("tir", __name__)
-tvm._ffi._init_api("tir.sparse", __name__)
+"""Sparse Matrices Row/Column-Reorder algorithms."""

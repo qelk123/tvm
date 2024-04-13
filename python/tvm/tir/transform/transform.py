@@ -19,7 +19,7 @@
 
 
 import enum
-from typing import Callable, Optional
+from typing import Callable, Optional, List
 
 from . import _ffi_api
 from . import function_pass as _fpass
@@ -1199,3 +1199,135 @@ def DefaultGPUSchedule():
     ret: tvm.transform.Pass
     """
     return _ffi_api.DefaultGPUSchedule()  # type: ignore
+
+
+def LowerSparseIter(check_invalid_binary_search: bool = False):
+    """Lower iterations in Sparse TIR
+
+    Parameters
+    ----------
+    check_invalid_binary_search : bool
+        Whether check invalid indices made by binary search.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.LowerSparseIter(check_invalid_binary_search)  # type: ignore
+
+
+def LowerSparseBuffer():
+    """Lower sparse buffers in Sparse TIR
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.LowerSparseBuffer()  # type: ignore
+
+
+def HorizontalFusion():
+    """Horizontal fusion in TIR scripts.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.HorizontalFusion()  # type: ignore
+
+
+def LowerAtomic():
+    """Lower the atomic operations in the program.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.LowerAtomic()  # type: ignore
+
+
+def SparseFormatDecompose(
+    composable_formats: List["FormatRewriteRule"], include_format_rewrite_blks: bool = True
+):
+    """Rewrite the sparse format of sparse buffers in the TIR scripts.
+
+    Parameters
+    ----------
+    composable_formats : List[FormatRewriteRule]
+        Composable formats is a list of rewrite rules.
+    include_format_rewrite_blks : bool
+        Whether to include format rewrite blocks in the output.
+
+    Returns
+    ------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.SparseFormatDecompose(composable_formats, include_format_rewrite_blks)  # type: ignore
+
+
+def ExtractPreprocess():
+    """Extract the preprocess blocks/sparse iterations in the module.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.ExtractPreprocess()  # type: ignore
+
+
+def RemovePreprocess():
+    """Remove the preprocess blocks/sparse iterations in the module.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.RemovePreprocess()  # type: ignore
+
+
+def InjectScope():
+    """Inject scope to avoid duplicate computation (e.g. in atomic operators)
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.InjectScope()  # type: ignore
+
+
+def RemoveUnusedArgs():
+    """Remove unused arguments.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.RemoveUnusedArgs()  # type: ignore
+
+
+def SpecializeBuffer(buf_name: str, idx_map: "IndexMap"):
+    """Specialize the buffer with given index map.
+
+    Parameters
+    ----------
+    buf_name : str
+        The name of the buffer to specialize.
+
+    idx_map : IndexMap
+        The index map.
+
+    Returns
+    -------
+    fpass : tvm.transform.Pass
+        The result pass
+    """
+    return _ffi_api.SpecializeBuffer(buf_name, idx_map)  # type: ignore

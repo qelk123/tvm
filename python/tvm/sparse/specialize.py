@@ -14,9 +14,33 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""FFI APIs for tvm.tir"""
-import tvm._ffi
+
+"""Specialize buffer with index map."""
+from typing import Callable, Union
+from tvm import IRModule
+from tvm.tir import IndexMap
+from tvm.tir.transform import SpecializeBuffer
 
 
-tvm._ffi._init_api("tir", __name__)
-tvm._ffi._init_api("tir.sparse", __name__)
+def specialize_buffer(mod: IRModule, buf_name: str, idx_map: Union[Callable, IndexMap]):
+    """Specialize a buffer in an IRModule with given buffer name and index map function.
+
+    Parameters
+    ----------
+    mod : IRModule
+        The IRModule we perform the specialization.
+
+    buf_name : str
+        The name of the buffer to specialize.
+
+    idx_map : IndexMap
+        The index map.
+
+    Returns
+    -------
+    IRModule
+        The new IRModule.
+    """
+    if isinstance(idx_map, Callable):
+        idx_map = IndexMap.from_func(idx_map)
+    return SpecializeBuffer(buf_name, idx_map)(mod)

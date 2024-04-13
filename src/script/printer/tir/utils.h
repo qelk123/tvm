@@ -100,6 +100,10 @@ inline IdDoc DefineBuffer(const tir::Buffer& buffer, const Frame& frame, const I
   return d->Define(buffer, frame, buffer->name.empty() ? "buffer" : buffer->name);
 }
 
+inline IdDoc DefineAxis(const tvm::tir::Axis& axis, const Frame& frame, const IRDocsifier& d) {
+  return d->Define(axis, frame, axis->name.empty() ? "axis" : axis->name);
+}
+
 /*!
  * \brief Recursively process the body statements of a TIR fragment represented by a frame
  * \param stmt The body statement to process

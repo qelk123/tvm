@@ -14,9 +14,9 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""FFI APIs for tvm.tir"""
-import tvm._ffi
 
+"""Python-interface for Sparse-TIR"""
 
-tvm._ffi._init_api("tir", __name__)
-tvm._ffi._init_api("tir.sparse", __name__)
+from .lower import lower_sparse_iter, lower_sparse_buffer
+from .format import FormatRewriteRule, column_part_hyb, condense, format_decompose, csf_to_ell3d
+from .specialize import specialize_buffer

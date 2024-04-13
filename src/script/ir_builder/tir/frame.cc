@@ -41,7 +41,9 @@ void PrimFuncFrameNode::ExitWithScope() {
       /*body=*/AsStmt(stmts),
       /*ret_type=*/ret_type.value_or(TupleType::Empty()),
       /*buffer_map=*/buffer_map,
-      /*attrs=*/DictAttrs(attrs));
+      /*attrs=*/DictAttrs(attrs),
+      /*span=*/tvm::Span(),
+      /*sp_axes=*/func_sp_axes);
   func = tvm::tir::ScriptComplete(func, root_alloc_buffers);
   IRBuilder builder = IRBuilder::Current();
   if (builder->frames.empty()) {

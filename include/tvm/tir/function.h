@@ -99,11 +99,16 @@ class PrimFuncNode : public BaseFuncNode {
    */
   Map<tir::Var, Buffer> buffer_map;
 
+  /*! \brief Sparse axes declared in the primitive function.
+   */
+  Array<Axis> sp_axes;
+
   void VisitAttrs(tvm::AttrVisitor* v) {
     v->Visit("params", &params);
     v->Visit("body", &body);
     v->Visit("ret_type", &ret_type);
     v->Visit("buffer_map", &buffer_map);
+    v->Visit("sp_axes", &sp_axes);
     v->Visit("attrs", &attrs);
     v->Visit("span", &span);
     v->Visit("_checked_type_", &checked_type_);
@@ -112,6 +117,7 @@ class PrimFuncNode : public BaseFuncNode {
   bool SEqualReduce(const PrimFuncNode* other, SEqualReducer equal) const {
     // visit params and buffer_map first as they contains defs.
     return equal.DefEqual(params, other->params) && equal(buffer_map, other->buffer_map) &&
+           equal(sp_axes, other->sp_axes) && 
            equal(ret_type, other->ret_type) && equal(body, other->body) &&
            equal(attrs, other->attrs);
   }
@@ -119,6 +125,7 @@ class PrimFuncNode : public BaseFuncNode {
   void SHashReduce(SHashReducer hash_reduce) const {
     hash_reduce.DefHash(params);
     hash_reduce(buffer_map);
+    hash_reduce(sp_axes);
     hash_reduce(ret_type);
     hash_reduce(body);
     hash_reduce(attrs);
@@ -158,13 +165,15 @@ class PrimFunc : public BaseFunc {
    * PrimFunc.  (e.g. a buffer of shape ``[1024]`` originally
    * generated as a tensor of shape ``[32, 32]``)
    *
+   * \param sp_axes The sparse axes declared in the function.
+   * 
    * \param attrs Additional function attributes.
    *
    * \param span The location of this object in the source code.
    */
   TVM_DLL PrimFunc(Array<tir::Var> params, Stmt body, Type ret_type = VoidType(),
                    Map<tir::Var, Buffer> buffer_map = Map<tir::Var, Buffer>(),
-                   DictAttrs attrs = DictAttrs(), Span span = Span());
+                   DictAttrs attrs = DictAttrs(), Span span = Span(), Array<Axis> sp_axes = Array<Axis>());
 
   TVM_DEFINE_OBJECT_REF_METHODS(PrimFunc, BaseFunc, PrimFuncNode);
   TVM_DEFINE_OBJECT_REF_COW_METHOD(PrimFuncNode);

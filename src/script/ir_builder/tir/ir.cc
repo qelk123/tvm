@@ -18,6 +18,7 @@
  */
 #include <tvm/arith/analyzer.h>
 #include <tvm/script/ir_builder/tir/ir.h>
+#include <tvm/tir/sparse.h>
 
 #include "./utils.h"
 
@@ -612,6 +613,19 @@ PrimExpr Ptr(runtime::DataType dtype, String storage_scope = "global", bool is_s
   return is_size_var ? tvm::tir::SizeVar("", type_annotation) : tvm::tir::Var("", type_annotation);
 }
 
+tvm::tir::Axis Axis(String name, Optional<tvm::tir::Axis> parent, PrimExpr length, PrimExpr nnz,
+                    Optional<PrimExpr> nnz_cols, Optional<Var> indptr, Optional<Var> indices,
+                    DataType idtype, Bool sorted) {
+  auto generated_axis = tvm::tir::Axis(std::move(name), std::move(parent), std::move(length), std::move(nnz),
+                                       std::move(nnz_cols), std::move(indptr), std::move(indices), std::move(idtype),
+                                       sorted->value);
+  PrimFuncFrame frame = FindPrimFuncFrame("T.Axis");
+
+  frame->func_sp_axes.push_back(generated_axis);
+
+  return generated_axis;
+}
+
 using tvm::script::ir_builder::details::Namer;
 
 TVM_STATIC_IR_FUNCTOR(Namer, vtable)
@@ -648,6 +662,13 @@ TVM_STATIC_IR_FUNCTOR(Namer, vtable)
       using namespace tvm::tir;
       IterVarNode* var = const_cast<IterVarNode*>(node.as<IterVarNode>());
       Namer::Name(var->var, name);
+    });
+
+TVM_STATIC_IR_FUNCTOR(Namer, vtable)
+    .set_dispatch<tvm::tir::AxisNode>([](const ObjectRef& node, String name) -> void {
+      using namespace tvm::tir;
+      AxisNode* axis = const_cast<AxisNode*>(node.as<AxisNode>());
+      axis->name = name;
     });
 
 TVM_REGISTER_GLOBAL("script.ir_builder.tir.Buffer").set_body_typed(BufferDecl);
@@ -721,6 +742,10 @@ TVM_REGISTER_GLOBAL("script.ir_builder.tir.Prefetch").set_body_typed(Prefetch);
 TVM_REGISTER_GLOBAL("script.ir_builder.tir.Evaluate").set_body_typed(Evaluate);
 
 TVM_REGISTER_GLOBAL("script.ir_builder.tir.Ptr").set_body_typed(Ptr);
+
+// for sparse
+
+TVM_REGISTER_GLOBAL("script.ir_builder.tir.Axis").set_body_typed(Axis);
 
 #define TVM_TMP_STR(x) #x
 

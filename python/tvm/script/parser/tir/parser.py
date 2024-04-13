@@ -23,6 +23,7 @@ from typing import Any
 import tvm
 from tvm.ir import GlobalVar, PrimType
 from tvm.tir import Buffer, IterVar, PrimExpr, Var
+from tvm.tir.sparse import Axis
 
 from ...ir_builder import ir as I
 from ...ir_builder import tir as T
@@ -138,7 +139,7 @@ def bind_assign_value(self: Parser, node: doc.expr, var_name: str, value: Any) -
         res = value.__enter__()
         IRBuilder.name(var_name, res)
         return res
-    elif isinstance(value, (Buffer, IterVar)) or (
+    elif isinstance(value, (Buffer, IterVar, Axis)) or (
         isinstance(value, Var) and not self.var_table.exist(value)
     ):
         IRBuilder.name(var_name, value)
@@ -257,7 +258,7 @@ def visit_assign(self: Parser, node: doc.Assign) -> None:
         else:
             indices = self.eval_expr(lhs.slice)
         T.buffer_store(self.eval_expr(lhs.value), rhs, indices)
-    else:
+    else:  # do name binding here
         self.eval_assign(target=lhs, source=rhs, bind_value=bind_assign_value)
 
 

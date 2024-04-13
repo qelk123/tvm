@@ -22,6 +22,7 @@
 #include <tvm/script/ir_builder/base.h>
 #include <tvm/script/ir_builder/ir/frame.h>
 #include <tvm/tir/stmt.h>
+#include <tvm/tir/sparse.h>
 
 namespace tvm {
 namespace script {
@@ -83,6 +84,8 @@ class PrimFuncFrameNode : public TIRFrameNode {
   Map<tvm::tir::Var, tvm::tir::IterVar> env_threads;
   /*! \brief The buffer allocated in root block. */
   Array<tvm::tir::Buffer> root_alloc_buffers;
+  /*! \brief The special axes of the function. */
+  Array<tvm::tir::Axis> func_sp_axes;
 
   void VisitAttrs(tvm::AttrVisitor* v) {
     TIRFrameNode::VisitAttrs(v);
@@ -94,6 +97,7 @@ class PrimFuncFrameNode : public TIRFrameNode {
     v->Visit("attrs", &attrs);
     v->Visit("env_threads", &env_threads);
     v->Visit("root_alloc_buffers", &root_alloc_buffers);
+    v->Visit("func_sp_axes", &func_sp_axes);
   }
 
   static constexpr const char* _type_key = "script.ir_builder.tir.PrimFuncFrame";

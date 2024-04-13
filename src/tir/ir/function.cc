@@ -69,7 +69,8 @@ relax::StructInfo InferStructInfo(const PrimFunc& prim_func) {
 
 // Get the function type of a PrimFunc
 PrimFunc::PrimFunc(Array<tir::Var> params, Stmt body, Type ret_type,
-                   Map<tir::Var, Buffer> buffer_map, DictAttrs attrs, Span span) {
+                   Map<tir::Var, Buffer> buffer_map,
+                   DictAttrs attrs, Span span, Array<Axis> sp_axes) {
   if (!attrs.defined()) {
     attrs = DictAttrs();
   }
@@ -84,6 +85,7 @@ PrimFunc::PrimFunc(Array<tir::Var> params, Stmt body, Type ret_type,
   n->body = std::move(body);
   n->ret_type = std::move(ret_type);
   n->buffer_map = std::move(buffer_map);
+  n->sp_axes = std::move(sp_axes);
   n->attrs = std::move(attrs);
   n->checked_type_ = n->func_type_annotation();
   n->struct_info_ = relax::FuncStructInfo::OpaqueFunc();
@@ -158,8 +160,8 @@ TVM_REGISTER_NODE_TYPE(TensorIntrinNode);
 
 TVM_REGISTER_GLOBAL("tir.PrimFunc")
     .set_body_typed([](Array<tir::Var> params, Stmt body, Type ret_type,
-                       Map<tir::Var, Buffer> buffer_map, DictAttrs attrs, Span span) {
-      return PrimFunc(params, body, ret_type, buffer_map, attrs, span);
+                       Map<tir::Var, Buffer> buffer_map, DictAttrs attrs, Span span, Array<Axis> sp_axes) {
+      return PrimFunc(params, body, ret_type, buffer_map, attrs, span,  sp_axes);
     });
 
 TVM_REGISTER_GLOBAL("tir.TensorIntrin")

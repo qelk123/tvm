@@ -34,6 +34,7 @@
 #include <tvm/runtime/container/string.h>
 #include <tvm/runtime/data_type.h>
 #include <tvm/tir/buffer.h>
+#include <tvm/tir/sparse.h>
 #include <tvm/tir/var.h>
 
 #include <algorithm>
