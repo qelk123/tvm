@@ -30,7 +30,7 @@ import numpy as np  # type: ignore
 
 from tvm import tir
 from tvm import ir
-from tvm.ir import Type
+from tvm.ir import Type, PrimType, PointerType
 from tvm.ir.base import deprecated
 from tvm.runtime import String, convert, ndarray
 from tvm.target import Target
@@ -1413,6 +1413,34 @@ def sparse_variable(
     indptr, indices = data
     return _ffi_api.Axis('', parent_axis, length, nnz, None, indptr, indices, idtype, sorted)
 
+
+def match_sparse_buffer(
+        param: Var,
+        axes: List[Axis],
+        dtype: str = "float32",
+        extra_storage: Optional[PrimExpr] = None,
+        default_value: Optional[PrimExpr] = None,
+    ):
+    assert isinstance(param, Var)
+    storage_type = PrimType(dtype)
+    storage_type = PrimType("int8") if storage_type.dtype == "bool" else storage_type
+    data = Var("", PointerType(storage_type, "global"))
+    return _ffi_api.SparseBuffer(param, data, axes, dtype, '', extra_storage, default_value)
+
+
+def sp_iter(axes: List, iter_types: str, name_hint: str = ""):
+    # flatten nested axes to axes, to address the special case of fusion.
+    def flatten_axes(axes: List[Union[Axis, List[Axis]]]) -> List[Axis]:
+        ret = []
+        for axis_group in axes:
+            if isinstance(axis_group, List):
+                ret += axis_group
+            else:
+                ret.append(axis_group)
+        return ret
+    return _ffi_api.SpIter(flatten_axes(axes), iter_types, name_hint)
+    
+
 # pylint: disable=invalid-name
 int8 = func_gen(("Int8"))
 int16 = func_gen(("Int16"))
@@ -2277,4 +2305,6 @@ __all__ = [
     "dense_variable",
     "sparse_fixed",
     "sparse_variable",
+    "match_sparse_buffer",
+    "sp_iter",
 ]

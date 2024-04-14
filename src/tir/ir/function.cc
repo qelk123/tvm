@@ -61,6 +61,12 @@ relax::StructInfo InferStructInfo(const PrimFunc& prim_func) {
     }
   }();
 
+  // FIXME: Currently we assume sparseTIR func has no side effect
+  // since tir.SparseIteration is not supported by the functor yet.
+  if (prim_func->sp_axes.size() > 0) {
+    return relax::FuncStructInfo(params, ret, true);
+  }
+
   bool purity = prim_func->body.defined() ? IsPureFunction(prim_func) : false;
 
   return relax::FuncStructInfo(params, ret, purity);

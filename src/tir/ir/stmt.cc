@@ -540,6 +540,26 @@ TVM_REGISTER_GLOBAL("tir.BufferRealize")
 
 TVM_REGISTER_NODE_TYPE(BufferRealizeNode);
 
+// BufferDomain
+BufferDomain::BufferDomain(Buffer buffer, Range dom) {
+  ObjectPtr<BufferDomainNode> node = make_object<BufferDomainNode>();
+  node->buffer = buffer;
+  node->dom = dom;
+  data_ = std::move(node);
+}
+
+TVM_REGISTER_GLOBAL("tir.BufferDomain").set_body_typed([](Buffer buffer, Range dom) {
+  return BufferDomain(buffer, dom);
+});
+
+TVM_REGISTER_NODE_TYPE(BufferDomainNode);
+
+TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
+    .set_dispatch<BufferDomainNode>([](const ObjectRef& node, ReprPrinter* p) {
+      auto* op = static_cast<const BufferDomainNode*>(node.get());
+      p->stream << "buffer_domain(" << op->buffer->name << ", dom=" << op->dom << ")";
+    });
+
 // BufferRegion
 BufferRegion::BufferRegion(Buffer buffer, Array<Range> region) {
   CHECK_EQ(buffer->shape.size(), region.size())
@@ -639,7 +659,7 @@ TVM_REGISTER_NODE_TYPE(MatchBufferRegionNode);
 Block::Block(Array<IterVar> iter_vars, Array<BufferRegion> reads, Array<BufferRegion> writes,
              String name_hint, Stmt body, Optional<Stmt> init, Array<Buffer> alloc_buffers,
              Array<MatchBufferRegion> match_buffers, Map<String, ObjectRef> annotations,
-             Span span) {
+             Span span, Array<BufferDomain> buf_doms) {
   ObjectPtr<BlockNode> node = make_object<BlockNode>();
   node->iter_vars = std::move(iter_vars);
   node->reads = std::move(reads);
@@ -650,6 +670,7 @@ Block::Block(Array<IterVar> iter_vars, Array<BufferRegion> reads, Array<BufferRe
   node->alloc_buffers = std::move(alloc_buffers);
   node->match_buffers = std::move(match_buffers);
   node->annotations = std::move(annotations);
+  node->buf_doms = std::move(buf_doms);
   node->span = std::move(span);
   data_ = std::move(node);
 }
@@ -684,6 +705,27 @@ TVM_REGISTER_GLOBAL("tir.BlockRealize")
     });
 
 TVM_REGISTER_NODE_TYPE(BlockRealizeNode);
+
+SparseIteration::SparseIteration(Array<SpIterVar> sp_iter_vars, String name, Stmt body,
+                                 Optional<Stmt> init, Map<String, ObjectRef> annotations,
+                                 Span span) {
+  ObjectPtr<SparseIterationNode> node = make_object<SparseIterationNode>();
+  node->sp_iter_vars = std::move(sp_iter_vars);
+  node->name = std::move(name);
+  node->body = std::move(body);
+  node->init = std::move(init);
+  node->annotations = std::move(annotations);
+  node->span = std::move(span);
+  data_ = std::move(node);
+}
+
+TVM_REGISTER_GLOBAL("tir.SparseIteration")
+    .set_body_typed([](Array<SpIterVar> sp_iter_vars, String name, Stmt body, Optional<Stmt> init,
+                       Map<String, ObjectRef> annotations, Span span) {
+      return SparseIteration(sp_iter_vars, name, body, init, annotations, span);
+    });
+
+TVM_REGISTER_NODE_TYPE(SparseIterationNode);
 
 PrimExpr TypeAnnotation(DataType dtype, Span span) {
   static auto op = Op::Get("tir.type_annotation");

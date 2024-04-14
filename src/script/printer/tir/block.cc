@@ -228,8 +228,15 @@ TVM_STATIC_IR_FUNCTOR(IRDocsifier, vtable)
       return PrintBlock(d, block, p, NullOpt, NullOpt);
     });
 
+TVM_STATIC_IR_FUNCTOR(IRDocsifier, vtable)
+    .set_dispatch<tir::SparseIteration>("", [](tir::SparseIteration sparse_iter, ObjectPath p, IRDocsifier d) -> Doc {
+      return TIR(d, "sparse_iter_block");
+    });
+
+
 TVM_SCRIPT_REPR(tir::BlockNode, ReprPrintTIR);
 TVM_SCRIPT_REPR(tir::BlockRealizeNode, ReprPrintTIR);
+TVM_SCRIPT_REPR(tir::SparseIterationNode, ReprPrintTIR);
 
 }  // namespace printer
 }  // namespace script

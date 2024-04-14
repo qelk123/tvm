@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type, Uni
 
 from . import dispatch, doc
 from .error import ParserError
+from ....script.ir_builder.tir.frame import SpIterFrame
 
 if TYPE_CHECKING:
     from .parser import Parser
@@ -551,24 +552,29 @@ def _eval_assign(
     """
     target = doc.from_doc(target)
     assert isinstance(target, ast.expr)
-    RHS_VAR_NAME = "__tvm_rhs_var__"  # pylint: disable=invalid-name
-    rhs_var_name = RHS_VAR_NAME
-    dict_locals = {rhs_var_name: source}
-    mod = ast.fix_missing_locations(
-        ast.Module(
-            body=[
-                ast.Assign(
-                    targets=[target],
-                    value=ast.Name(
-                        id=rhs_var_name,
-                        ctx=ast.Load(),
-                    ),
-                )
-            ],
-            type_ignores=[],
+    if isinstance(source, SpIterFrame):
+        dict_locals = {}
+        for elt, fake_var in zip(target.elts, source.fake_vars):
+            dict_locals[elt.id] = fake_var
+    else:
+        RHS_VAR_NAME = "__tvm_rhs_var__"  # pylint: disable=invalid-name
+        rhs_var_name = RHS_VAR_NAME
+        dict_locals = {rhs_var_name: source}
+        mod = ast.fix_missing_locations(
+            ast.Module(
+                body=[
+                    ast.Assign(
+                        targets=[target],
+                        value=ast.Name(
+                            id=rhs_var_name,
+                            ctx=ast.Load(),
+                        ),
+                    )
+                ],
+                type_ignores=[],
+            )
         )
-    )
-    exe = compile(mod, filename="<ast>", mode="exec")
-    exec(exe, {}, dict_locals)  # pylint: disable=exec-used
-    del dict_locals[rhs_var_name]
+        exe = compile(mod, filename="<ast>", mode="exec")
+        exec(exe, {}, dict_locals)  # pylint: disable=exec-used
+        del dict_locals[rhs_var_name]
     return dict_locals

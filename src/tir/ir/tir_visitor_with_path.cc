@@ -337,6 +337,9 @@ void TIRVisitorWithPath::VisitStmt_(const BlockRealizeNode* op, ObjectPath path)
   Visit(op->block, path->Attr("block"));
 }
 
+void TIRVisitorWithPath::VisitStmt_(const SparseIterationNode* op, ObjectPath path) {
+}
+
 void TIRVisitorWithPath::VisitExpr_(const VarNode* op, ObjectPath path) {}
 
 void TIRVisitorWithPath::VisitExpr_(const SizeVarNode* op, ObjectPath path) {

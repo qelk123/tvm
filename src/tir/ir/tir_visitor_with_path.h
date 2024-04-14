@@ -117,6 +117,7 @@ class TIRVisitorWithPath : protected ExprFunctor<void(const PrimExpr&, ObjectPat
   void VisitStmt_(const EvaluateNode* op, ObjectPath path) override;
   void VisitStmt_(const BlockNode* op, ObjectPath path) override;
   void VisitStmt_(const BlockRealizeNode* op, ObjectPath path) override;
+  void VisitStmt_(const SparseIterationNode* op, ObjectPath path) override;
 
   using ExprFunctor::VisitExpr;
   void VisitExpr_(const VarNode* op, ObjectPath path) override;

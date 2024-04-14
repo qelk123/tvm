@@ -626,6 +626,35 @@ tvm::tir::Axis Axis(String name, Optional<tvm::tir::Axis> parent, PrimExpr lengt
   return generated_axis;
 }
 
+tvm::tir::SparseBuffer SparseBuffer(Var param, Var data, Array<tvm::tir::Axis> axes, DataType dtype, String name,
+                                    Optional<PrimExpr> extra_storage, Optional<PrimExpr> default_value) {
+  auto generated_sparse_buffer = tvm::tir::SparseBuffer(data, axes, dtype, name, extra_storage, default_value);
+
+  PrimFuncFrame frame = FindPrimFuncFrame("T.MatchBuffer");
+
+  frame->buffer_map.Set(param,generated_sparse_buffer);
+
+  return generated_sparse_buffer;
+}
+
+SpIterFrame SpIter(Array<tvm::tir::Axis> axes, String iter_types, String name_hint) {
+  using namespace tvm::tir;
+  ObjectPtr<SpIterFrameNode> n = make_object<SpIterFrameNode>();
+  n->sp_iters.reserve(axes.size());
+  n->fake_vars.reserve(axes.size());
+  n->axes = axes;
+  n->name_hint = name_hint;
+  n->iter_types = iter_types;
+
+  for (size_t idx = 0; idx < axes.size(); idx ++) {
+    DataType dtype = axes[idx]->idtype;
+    n->fake_vars.push_back(Var("", dtype));
+    // tvm::tir::Axis cur_axis = axes[idx];
+    // n->sp_iters.push_back(SpIterVar(Var("", dtype), iter_types.at(idx) == 'R', cur_axis));
+  }
+  return SpIterFrame(n);
+}
+
 using tvm::script::ir_builder::details::Namer;
 
 TVM_STATIC_IR_FUNCTOR(Namer, vtable)
@@ -669,6 +698,21 @@ TVM_STATIC_IR_FUNCTOR(Namer, vtable)
       using namespace tvm::tir;
       AxisNode* axis = const_cast<AxisNode*>(node.as<AxisNode>());
       axis->name = name;
+    });
+
+TVM_STATIC_IR_FUNCTOR(Namer, vtable)
+    .set_dispatch<tvm::tir::SparseBufferNode>([](const ObjectRef& node, String name) -> void {
+      using namespace tvm::tir;
+      SparseBufferNode* sp_buffer = const_cast<SparseBufferNode*>(node.as<SparseBufferNode>());
+      sp_buffer->name = name + "_data";
+      Namer::Name(sp_buffer->data, name);
+    });
+
+TVM_STATIC_IR_FUNCTOR(Namer, vtable)
+    .set_dispatch<tvm::tir::SpIterVarNode>([](const ObjectRef& node, String name) -> void {
+      using namespace tvm::tir;
+      SpIterVarNode* sp_iter_var = const_cast<SpIterVarNode*>(node.as<SpIterVarNode>());
+      Namer::Name(sp_iter_var->var, name);
     });
 
 TVM_REGISTER_GLOBAL("script.ir_builder.tir.Buffer").set_body_typed(BufferDecl);
@@ -746,6 +790,8 @@ TVM_REGISTER_GLOBAL("script.ir_builder.tir.Ptr").set_body_typed(Ptr);
 // for sparse
 
 TVM_REGISTER_GLOBAL("script.ir_builder.tir.Axis").set_body_typed(Axis);
+TVM_REGISTER_GLOBAL("script.ir_builder.tir.SparseBuffer").set_body_typed(SparseBuffer);
+TVM_REGISTER_GLOBAL("script.ir_builder.tir.SpIter").set_body_typed(SpIter);
 
 #define TVM_TMP_STR(x) #x
 

@@ -244,6 +244,19 @@ Array<PrimExpr> GetBufferAllocationShape(const Buffer& buffer);
  */
 Bool IsFromLegacyTESchedule(PrimFunc f);
 
+
+/*!
+ * \brief Return the sparse tir level.
+ * \note
+ * 0: not sparse tir (or a sparse tir after we lower sparse buffers)
+ * 1: sparse tir after lower sparse iterators.
+ * 2: raw sparse tir before lowering.
+ *
+ * \param f PrimFunc to check
+ * \return The sparse-tir level.
+ */
+Integer SparseTIRLevel(PrimFunc f);
+
 /*!
  * \brief Context helper to update domain map within conditional scope.
  * Assume the condition is `0 <= i && i < 9` and domain of i is [0, 20], Then

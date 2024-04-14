@@ -136,7 +136,11 @@ TVM_STATIC_IR_FUNCTOR(IRDocsifier, vtable)
           ExprDoc param_doc = args[i]->lhs;
           ObjectPath buffer_p = p->Attr("buffer_map")->MapValue(param);
           ExprDoc lhs = DefineBuffer(buffer, *f, d);
-          ExprDoc rhs = BufferDecl(buffer, "match_buffer", {param_doc}, buffer_p, *f, d,
+          bool is_match_sparse = buffer.as<tir::SparseBufferNode>() != nullptr;
+          String prefix_name = "match_buffer";
+          if (is_match_sparse)
+            prefix_name = "match_sparse_buffer";
+          ExprDoc rhs = BufferDecl(buffer, prefix_name, {param_doc}, buffer_p, *f, d,
                                    BufferVarDefinition::MatchBuffer);
           (*f)->stmts.push_back(AssignDoc(lhs, rhs, NullOpt));
         }

@@ -43,6 +43,10 @@ class BlockInitFrame(TIRFrame):
     ...
 
 
+@_register_object("script.ir_builder.tir.SpIterFrame")
+class SpIterFrame(BlockFrame):
+    ...
+
 @_register_object("script.ir_builder.tir.ForFrame")
 class ForFrame(TIRFrame):
     def __enter__(self) -> Union[Var, List[Var]]:  # type: ignore[override]

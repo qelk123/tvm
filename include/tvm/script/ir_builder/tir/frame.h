@@ -170,14 +170,14 @@ class BlockFrameNode : public TIRFrameNode {
   }
 
   static constexpr const char* _type_key = "script.ir_builder.tir.BlockFrame";
-  TVM_DECLARE_FINAL_OBJECT_INFO(BlockFrameNode, TIRFrameNode);
+  TVM_DECLARE_BASE_OBJECT_INFO(BlockFrameNode, TIRFrameNode);
 
  public:
   /*!
    * \brief The method called when exiting RAII scope.
    * \sa tvm::support::With
    */
-  void ExitWithScope() final;
+  void ExitWithScope();
 };
 
 /*!
@@ -227,19 +227,47 @@ class BlockInitFrame : public TIRFrame {
 };
 
 /*!
- * \brief A frame that represents the for loop.
- *
- * \sa ForFrame
+ * \brief A frame that represents the declaration of a SpIter.
  */
-class ForFrameNode : public TIRFrameNode {
+class SpIterFrameNode : public BlockFrameNode {
+ public:
+
+  Array<tvm::tir::Axis> axes;
+  Array<tvm::tir::SpIterVar> sp_iters;
+  // fake vars for inner trace, will be transformed to sp_iters in the end
+  Array<tvm::tir::Var> fake_vars;
+  String iter_types;
+  String name_hint;
+
+  void VisitAttrs(tvm::AttrVisitor* v) {
+    TIRFrameNode::VisitAttrs(v);
+    v->Visit("axes", &axes);
+    v->Visit("sp_iters", &sp_iters);
+    v->Visit("fake_vars", &fake_vars);
+    v->Visit("iter_types", &iter_types);
+    v->Visit("name_hint", &name_hint);
+    // v->Visit("doms", &doms);
+    // `f_make_for_loop` is not visited.
+  }
+
+  static constexpr const char* _type_key = "script.ir_builder.tir.SpIterFrame";
+  TVM_DECLARE_FINAL_OBJECT_INFO(SpIterFrameNode, BlockFrameNode);
+
  public:
   /*!
-   * \brief Functions that generate loop nests.
-   * \param loop_vars The loop variables, from outer to inner
-   * \param loop_extents The loop extents that correspond to loop variables
-   * \param loop_body The loop body
-   * \return A stmt, the loop nest
+   * \brief The method called when exiting RAII scope.
+   * \sa tvm::support::With
    */
+  void ExitWithScope() final;
+};
+
+class SpIterFrame : public BlockFrame {
+ public:
+  TVM_DEFINE_MUTABLE_NOTNULLABLE_OBJECT_REF_METHODS(SpIterFrame, BlockFrame, SpIterFrameNode);
+};
+
+class ForFrameNode : public TIRFrameNode {
+ public:
   using FMakeForLoop = runtime::TypedPackedFunc<tvm::tir::Stmt(
       Array<tvm::tir::Var> loop_vars, Array<Range> loop_extents, tvm::tir::Stmt loop_body)>;
   /*! \brief The loop variable. */
@@ -266,6 +294,7 @@ class ForFrameNode : public TIRFrameNode {
    */
   void ExitWithScope() final;
 };
+
 
 /*!
  * \brief Managed reference to ForFrameNode.

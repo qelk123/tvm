@@ -23,7 +23,7 @@ from typing import Any
 import tvm
 from tvm.ir import GlobalVar, PrimType
 from tvm.tir import Buffer, IterVar, PrimExpr, Var
-from tvm.tir.sparse import Axis
+from tvm.tir.sparse import Axis, SpIterVar
 
 from ...ir_builder import ir as I
 from ...ir_builder import tir as T
@@ -60,7 +60,7 @@ def bind_with_value(self: Parser, node: doc.expr, var_name: str, value: Any) -> 
         for i, v in enumerate(value):
             bind_with_value(self, node, f"{var_name}_{i}", v)
         return value
-    elif isinstance(value, (Buffer, Var)):
+    elif isinstance(value, (Buffer, Var, SpIterVar)):
         IRBuilder.name(var_name, value)
         return value
     else:

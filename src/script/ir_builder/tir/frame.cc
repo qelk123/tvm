@@ -207,6 +207,16 @@ void DeclBufferFrameNode::ExitWithScope() {
   }
 }
 
+void SpIterFrameNode::ExitWithScope() {
+  TIRFrameNode::ExitWithScope();
+  for (size_t idx = 0; idx < axes.size(); idx ++) {
+    sp_iters.push_back(
+      tvm::tir::SpIterVar(fake_vars[idx], iter_types.at(idx) == 'R', axes[idx]));
+  }
+  AddToParent(
+    tvm::tir::SparseIteration(sp_iters, name_hint, AsStmt(stmts), init));
+}
+
 TVM_REGISTER_NODE_TYPE(TIRFrameNode);
 TVM_REGISTER_NODE_TYPE(PrimFuncFrameNode);
 TVM_REGISTER_NODE_TYPE(BlockFrameNode);
@@ -224,6 +234,8 @@ TVM_REGISTER_NODE_TYPE(IfFrameNode);
 TVM_REGISTER_NODE_TYPE(ThenFrameNode);
 TVM_REGISTER_NODE_TYPE(ElseFrameNode);
 TVM_REGISTER_NODE_TYPE(DeclBufferFrameNode);
+
+TVM_REGISTER_NODE_TYPE(SpIterFrameNode);
 
 }  // namespace tir
 }  // namespace ir_builder
