@@ -1,7 +1,7 @@
 import tvm
 import tvm.testing
 from tvm.script import tir as T
-# import tvm.sparse
+import tvm.sparse
 
 
 @T.prim_func
@@ -37,10 +37,40 @@ def csrmm(
 
 def bench_hyb(*args, **kwargs):
     mod = tvm.IRModule.from_expr(csrmm)
-    # mod = tvm.sparse.lower_sparse_iter(mod)
-    # mod = tvm.sparse.lower_sparse_buffer(mod)
+    mod = tvm.sparse.lower_sparse_iter(mod)
+    mod = tvm.sparse.lower_sparse_buffer(mod)
     print(mod)
     f = tvm.build(mod, target="llvm")
+    
+    import numpy as np
+    nnz = 8
+    # data_nd = tvm.nd.array(np.ones((nnz)).astype("float32"))
+    data_nd = tvm.nd.array(np.random.randn((nnz)).astype("float32"))
+    n = 8
+    m = 3
+    num_tiles = 2
+    cwm = 2
+    index_nd = tvm.nd.array(np.array([1, 2, 4, 2, 5, 1, 3, 4], dtype="int32"))
+    indptr_nd = tvm.nd.array(np.array([0, 3, 5, 8], dtype="int32"))
+    b_nd = tvm.nd.array(np.random.randn((n * num_tiles * cwm * 32)).astype("float32"))
+    c_nd = tvm.nd.array(np.zeros((m * num_tiles * cwm * 32)).astype("float32"))
+    f(data_nd, b_nd, c_nd, indptr_nd, index_nd, m, n, num_tiles, nnz, cwm)
+    c_np: np.ndarray = c_nd.asnumpy()
+    c_np = c_np.reshape((m, num_tiles, cwm, 32))
+    
+    c_np_ref = np.zeros_like(c_np)
+    b_np_ref = b_nd.asnumpy().reshape((n, num_tiles, cwm, 32))
+    index_np = index_nd.asnumpy()
+    indptr_np = indptr_nd.asnumpy()
+    data_np = data_nd.asnumpy()
+    for i in range(m):
+        for j in range(indptr_np[i], indptr_np[i + 1]):
+            for k1 in range(num_tiles):
+                for k2 in range(cwm):
+                    for k3 in range(32):
+                        c_np_ref[i, k1, k2, k3] += data_np[j] * b_np_ref[index_np[j], k1, k2, k3]
+
+    tvm.testing.assert_allclose(c_np, c_np_ref, rtol=1e-5, atol=1e-5)
 
 
 

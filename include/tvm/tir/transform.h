@@ -27,6 +27,7 @@
 #include <tvm/ir/transform.h>
 #include <tvm/target/target.h>
 #include <tvm/tir/expr.h>
+#include <tvm/tir/format_rewrite.h>
 #include <tvm/tir/function.h>
 
 #include <string>
@@ -833,6 +834,74 @@ TVM_DLL Pass InstrumentProfileIntrinsics();
  * \return The Pass.
  */
 TVM_DLL Pass DefaultGPUSchedule();
+
+// Sparse TIR related passes
+
+/*!
+ * \brief Lower sparse iterations in Sparse TIR.
+ * \return The pass.
+ */
+TVM_DLL Pass LowerSparseIter(bool check_invalid_binary_search = false);
+
+/*!
+ * \brief Lower sparse buffers in Sparse TIR.
+ * \return The pass.
+ */
+TVM_DLL Pass LowerSparseBuffer();
+
+/*!
+ * \brief Horizontal fusion pass.
+ * \return The pass.
+ */
+TVM_DLL Pass HorizontalFusion();
+
+/*!
+ * \brief Lower atomic operations.
+ * \return The pass.
+ */
+TVM_DLL Pass LowerAtomic();
+
+/*!
+ * \brief Sparse format rewrite pass.
+ * \param format_rewrite_rules The list of format rewrite rules to perform.
+ * \param include_format_rewrite_blks Whether to include format rewrite blocks in the output TIR
+ * scripts.
+ * \return The pass.
+ */
+TVM_DLL Pass SparseFormatDecompose(Array<FormatRewriteRule> format_rewrite_rules,
+                                   bool include_format_rewrite_blks);
+
+/*!
+ * \brief Extract the preprocess blocks/sparse iterations in the module.
+ * \return The pass.
+ */
+TVM_DLL Pass ExtractPreprocess();
+
+/*!
+ * \brief Remove the preprocess blocks/sparse iterations in the module.
+ * \return The pass.
+ */
+TVM_DLL Pass RemovePreprocess();
+
+/*!
+ * \brief Inject scope to avoid duplicate computation (e.g. in atomic operators)
+ * \return The pass.
+ */
+TVM_DLL Pass InjectScope();
+
+/*!
+ * \brief Remove unused arguments.
+ * \return The pass.
+ */
+TVM_DLL Pass RemoveUnusedArgs();
+
+/*!
+ * \brief Specialize the buffer with given index map.
+ * \param buf_name the name of the buffer to specialize.
+ * \param idx_map The index map.
+ * \return The pass.
+ */
+TVM_DLL Pass SpecializeBuffer(const String& buf_name, const IndexMap& idx_map);
 
 }  // namespace transform
 }  // namespace tir

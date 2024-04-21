@@ -639,6 +639,14 @@ TVM_DLL PrimExpr round(PrimExpr x, Span span = Span());
 TVM_DLL PrimExpr nearbyint(PrimExpr x, Span span = Span());
 
 /*!
+ * \brief Perform atomic add on ptr by val, and return the old value.
+ * \param ptr The address to perform atomic add.
+ * \param val The value to add.
+ * \return The old result stored in ptr.
+ */
+TVM_DLL PrimExpr atomic_add(tir::Var ptr, PrimExpr elem_offset, PrimExpr val, Span span = Span());
+
+/*!
  * \brief Calculate trunc(x)
  * \param x The input expression.
  * \param span The location of this operation in the source.

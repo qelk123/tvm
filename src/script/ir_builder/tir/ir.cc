@@ -704,8 +704,9 @@ TVM_STATIC_IR_FUNCTOR(Namer, vtable)
     .set_dispatch<tvm::tir::SparseBufferNode>([](const ObjectRef& node, String name) -> void {
       using namespace tvm::tir;
       SparseBufferNode* sp_buffer = const_cast<SparseBufferNode*>(node.as<SparseBufferNode>());
-      sp_buffer->name = name + "_data";
+      sp_buffer->name = name;
       Namer::Name(sp_buffer->data, name);
+      Namer::Name(sp_buffer->flattened, name + "_data");
     });
 
 TVM_STATIC_IR_FUNCTOR(Namer, vtable)

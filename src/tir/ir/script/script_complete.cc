@@ -113,7 +113,7 @@ class ScriptCompleter : public StmtMutator {
   bool is_root_block_ = true;
 };
 
-PrimFunc ScriptComplete(PrimFunc func, const Array<Buffer>& root_allocates) {
+PrimFunc ScriptComplete(PrimFunc func, const Array<Buffer>& root_allocates, bool user_specified_yes) {
   Map<Var, Buffer> buffer_var_map;
   for (const auto& pair : func->buffer_map) {
     const Buffer& buffer = pair.second;
@@ -129,6 +129,9 @@ PrimFunc ScriptComplete(PrimFunc func, const Array<Buffer>& root_allocates) {
   // ScriptCompleter, in order to fill the root block's T.reads() and
   // T.writes() annotations, as if it had been explicitly written.
   bool should_insert_root = [&]() -> bool {
+    if (user_specified_yes) {
+      return true;
+    }
     if (root_allocates.size()) {
       return true;
     }

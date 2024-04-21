@@ -35,7 +35,7 @@ void PrimFuncFrameNode::ExitWithScope() {
   if (!is_private && name.defined() && !attrs.count(tvm::attr::kGlobalSymbol)) {
     attrs.Set(tvm::attr::kGlobalSymbol, name.value());
   }
-
+  // std::cout << "cur func_sp_axes is :" << TVMScriptPrinter::Script(GetRef<ObjectRef>(func_sp_axes.get()), PrinterConfig()) << std::endl;
   tvm::tir::PrimFunc func(
       /*params=*/args,
       /*body=*/AsStmt(stmts),
@@ -44,7 +44,7 @@ void PrimFuncFrameNode::ExitWithScope() {
       /*attrs=*/DictAttrs(attrs),
       /*span=*/tvm::Span(),
       /*sp_axes=*/func_sp_axes);
-  func = tvm::tir::ScriptComplete(func, root_alloc_buffers);
+  func = tvm::tir::ScriptComplete(func, root_alloc_buffers, true);
   IRBuilder builder = IRBuilder::Current();
   if (builder->frames.empty()) {
     ICHECK(!builder->result.defined()) << "ValueError: Builder.result has already been set";

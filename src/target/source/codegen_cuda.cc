@@ -1100,6 +1100,15 @@ void CodeGenCUDA::VisitExpr_(const CallNode* op, std::ostream& os) {
     stream << ": \"l\"((void*)(" << global_buffer << "+" << global_addr << ")), \"r\"((int)"
            << guard << ")\n";
     stream << ");\n";
+  } else if (op->op.same_as(builtin::tvm_atomic_add())) {
+    os << "atomicAdd(";
+    ICHECK_EQ(op->args.size(), 3U);
+    this->PrintExpr(op->args[0], os);
+    os << " + ";
+    this->PrintExpr(op->args[1], os);
+    os << ", ";
+    this->PrintExpr(op->args[2], os);
+    os << ")";
   } else {
     CodeGenC::VisitExpr_(op, os);
   }

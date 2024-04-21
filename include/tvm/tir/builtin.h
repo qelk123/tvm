@@ -778,6 +778,13 @@ TVM_DLL const Op& vectorcombine();
  * \brief atomic add instruction, corresponding e.g. to atomicAdd in CUDA
  */
 TVM_DLL const Op& atomic_add();
+
+/*!
+ * \brief Atomic add function.
+ */
+TVM_DLL const Op& tvm_atomic_add();
+
+
 /*!
  * \brief Create an Nd memory allocation with storage scope
  */

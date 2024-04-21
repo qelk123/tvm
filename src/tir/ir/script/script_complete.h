@@ -30,7 +30,8 @@
 namespace tvm {
 namespace tir {
 
-PrimFunc ScriptComplete(PrimFunc func, const Array<Buffer>& root_allocates);
+PrimFunc ScriptComplete(PrimFunc func, const Array<Buffer>& root_allocates, bool user_specified_true = false);
+// add a user specified flag for Sparse TIR passes
 
 }  // namespace tir
 }  // namespace tvm

@@ -955,6 +955,11 @@ PrimExpr nearbyint(PrimExpr x, Span span) {
 
 TVM_TIR_REGISTER_PURE_UNARY_OP("nearbyint");
 
+// atomic_add
+PrimExpr atomic_add(tir::Var ptr, PrimExpr elem_offset, PrimExpr val, Span span) {
+  return tir::Call(val->dtype, builtin::tvm_atomic_add(), {ptr, elem_offset, val}, span);
+}
+
 // trunc
 PrimExpr trunc(PrimExpr x, Span span) {
   if (x.dtype().is_int() || x.dtype().is_uint()) {

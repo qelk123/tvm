@@ -56,6 +56,9 @@ class PrimFunc(BaseFunc, Scriptable):
 
     span : Optional[Span]
         The location of this itervar in the source code.
+
+    sp_axes : List[Axis]
+        Sparse axes declared in the function.
     """
 
     def __init__(
@@ -66,9 +69,11 @@ class PrimFunc(BaseFunc, Scriptable):
         buffer_map=None,
         attrs=None,
         span=None,
+        sp_axes=None,
     ):
         param_list = []
         buffer_map = {} if buffer_map is None else buffer_map
+        sp_axes = [] if sp_axes is None else sp_axes
         for x in params:
             x = tvm.runtime.convert(x) if not isinstance(x, Object) else x
             if isinstance(x, Buffer):
@@ -91,6 +96,7 @@ class PrimFunc(BaseFunc, Scriptable):
             buffer_map,
             attrs,
             span,
+            sp_axes,
         )  # type: ignore
 
     def with_body(self, new_body, span=None):
@@ -116,6 +122,7 @@ class PrimFunc(BaseFunc, Scriptable):
             self.buffer_map,
             self.attrs,
             span,
+            self.sp_axes,
         )
 
     def specialize(self, param_map: Mapping[Var, Union[PrimExpr, Buffer]]):
@@ -414,7 +421,7 @@ class IndexMap(Object):
 
         if is_iterable:
             for val in mapping:
-                if isinstance(val, tvm.ir.PrimExpr):
+                if isinstance(val, (tvm.ir.PrimExpr, int)):  # a bypass for int return value
                     final_indices.append(val)
                 elif val is IndexMap.AXIS_SEPARATOR:
                     axis_separators.append(len(final_indices))
