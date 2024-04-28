@@ -83,6 +83,19 @@ struct CacheStageInfo {
   std::unordered_set<StmtSRef, ObjectHash, ObjectEqual> consumer_blocks;
   /*! \brief cache region for the buffer to be cached */
   BufferRegion cache_region;
+  /*! \brief annotation of cache stage block. */
+  Map<String, ObjectRef> annotations;
+};
+
+struct ReverseCacheTouchedInfo {
+  /* Whether read or write. */
+  bool read;
+  /* Touched loop variable related information. */
+  Array<Var> loop_vars;
+  Array<Range> loop_ranges;
+  /* Touched block variable related information. */
+  Array<IterVar> block_vars;
+  Array<PrimExpr> iter_values;
 };
 
 /*! \brief Return the buffer region related with the buffer */
@@ -96,6 +109,105 @@ Optional<BufferRegion> GetBufferRegionFromBuffer(const Array<BufferRegion>& buff
     }
   }
   return res;
+}
+
+
+/*!
+ * \brief Create a loop nest that represents reverse cache copy (reverse_read / reverse_write) from
+ * read buffer to write buffer. \param cache_region The cached copy region. \param info The cache
+ * stage information, which will be updated in the function. \param storage_scope The storage scope
+ * of the cached buffer (only used in naming here) \returns A block indicating the body of the loop
+ * nesting.
+ */
+Block MakeReverseCacheStage(const BufferRegion& cache_region, ReverseCacheTouchedInfo* touched_info,
+                            CacheStageInfo* info, const String& storage_scope) {
+  /* Check whether cache region is a single point. */
+  bool single_point = true;
+  for (const Range& range : cache_region->region) {
+    const auto* ext_int = range->extent.as<IntImmNode>();
+    if (!ext_int || ext_int->value != 1) {
+      single_point = false;
+    }
+  }
+  CHECK(single_point) << "ReverseCacheStage is only valid when cache region is a single point.";
+  // loop variables
+  std::vector<Var> loop_vars;
+  // block variables
+  Array<IterVar> block_vars;
+  // bindings in block realize
+  std::vector<PrimExpr> iter_values;
+  // Create loop vars and block vars' binding_value
+  Map<Var, PrimExpr> var_map;
+  for (size_t i = 0; i < touched_info->loop_vars.size(); ++i) {
+    Var original_var = touched_info->loop_vars[i];
+    Var loop_var("ax" + std::to_string(i), original_var.dtype());
+    var_map.Set(original_var, loop_var);
+    loop_vars.push_back(loop_var);
+  }
+  for (size_t i = 0; i < touched_info->block_vars.size(); ++i) {
+    IterVar original_block_var = touched_info->block_vars[i];
+    PrimExpr original_iter_value = touched_info->iter_values[i];
+    IterVar block_var = IterVar(
+        /*dom=*/original_block_var->dom,
+        /*var=*/Var("v" + std::to_string(i), original_block_var->var.dtype()),
+        /*IterVarType=*/kDataPar);
+    var_map.Set(original_block_var->var, block_var->var);
+    block_vars.push_back(block_var);
+    iter_values.push_back(Substitute(original_iter_value, var_map));
+  }
+
+  // block access region for read/write buffers
+  Region read_access_region, write_access_region;
+  Array<PrimExpr> read_access_indices, write_access_indices;
+  // Compute read/write region and read/write access indices.
+  for (const Range& range : cache_region->region) {
+    if (touched_info->read) {
+      read_access_indices.push_back(Substitute(range->min, var_map));
+      read_access_region.push_back(Range::FromMinExtent(read_access_indices.back(), Integer(1)));
+    } else {
+      write_access_indices.push_back(Substitute(range->min, var_map));
+      write_access_region.push_back(Range::FromMinExtent(write_access_indices.back(), Integer(1)));
+    }
+  }
+  for (const IterVar& block_var : block_vars) {
+    if (touched_info->read) {
+      write_access_indices.push_back(block_var->var);
+      write_access_region.push_back(Range::FromMinExtent(write_access_indices.back(), Integer(1)));
+    } else {
+      read_access_indices.push_back(block_var->var);
+      read_access_region.push_back(Range::FromMinExtent(read_access_indices.back(), Integer(1)));
+    }
+  }
+
+  // Create New Block
+  Block block(
+      /*iter_vars*/ std::move(block_vars),
+      /*reads=*/{BufferRegion(info->read_buffer, read_access_region)},
+      /*writes=*/{BufferRegion(info->write_buffer, write_access_region)},
+      /*name_hint*/ cache_region->buffer->name + "_" + storage_scope,
+      /*body=*/
+      BufferStore(info->write_buffer, BufferLoad(info->read_buffer, read_access_indices),
+                  write_access_indices),
+      /*init=*/NullOpt,
+      /*alloc_buffers=*/{},
+      /*match_buffers=*/{},
+      /*annotations=*/info->annotations,
+      /*buf_doms=*/{}
+      );
+  // Create Block Realize node
+  Stmt body = BlockRealize(/*values=*/iter_values,
+                           /*predicate=*/const_true(),
+                           /*block=*/block);
+  // Create surrounding loops
+  for (size_t i = loop_vars.size(); i >= 1; --i) {
+    body = For(/*loop_var=*/loop_vars[i - 1],
+               /*min=*/touched_info->loop_ranges[i - 1]->min,
+               /*extent=*/touched_info->loop_ranges[i - 1]->extent,
+               /*kind=*/ForKind::kSerial,
+               /*body=*/body);
+  }
+  info->cache_stage = std::move(body);
+  return block;
 }
 
 struct ReindexCacheStageInfo : CacheStageInfo {
@@ -444,6 +556,7 @@ bool CalculateAffineFlag(const ScheduleState& self, const StmtSRef& block_sref) 
     return true;
   }
   arith::Analyzer analyzer;
+  analyzer.Bind(self->buf_dom_map);
   StmtSRef parent_sref = GetRef<StmtSRef>(block_sref->parent);
   return IsAffineBinding(/*realize=*/GetBlockRealize(self, block_sref),
                          /*loop_var_ranges=*/LoopDomainOfSRefTreePath(parent_sref),
@@ -573,6 +686,7 @@ BufferRegion RelaxBufferRegion(ScheduleState self, const BufferRegion& buffer_re
   Map<Var, PrimExpr> binding = GetBindings(realize);
   const Buffer& buffer = buffer_region->buffer;
   arith::Analyzer analyzer;
+  analyzer.Bind(self->buf_dom_map);
   BufferRegion subst_region = BufferRegion(buffer, Substitute(buffer_region->region, binding));
   Array<arith::IntSet> int_sets = AnalyzeRegionUpperBound(
       /*region=*/subst_region,
@@ -604,7 +718,8 @@ class CacheLocDetector : public StmtVisitor {
    */
   template <bool is_cache_read>
   static void Detect(const ScheduleState& self, const StmtSRef& block_sref,
-                     const StmtSRef& scope_sref, CacheStageInfo* info) {
+                     const StmtSRef& scope_sref, CacheStageInfo* info,
+                     Optional<String> block_filter = NullOpt) {
     std::vector<StmtSRef> related_blocks;
     // If consumer is specified, skip detecting the others
     if (is_cache_read) {
@@ -631,7 +746,7 @@ class CacheLocDetector : public StmtVisitor {
     }
 
     if (!related_blocks.empty()) {
-      CacheLocDetector detector(self, block_sref, scope_sref, related_blocks);
+      CacheLocDetector detector(self, block_sref, scope_sref, related_blocks, block_filter);
       detector(GetRef<Stmt>(scope_sref->stmt));
       info->loc_sref = detector.loc_sref_;
       info->loc_pos = detector.loc_pos_;
@@ -664,11 +779,12 @@ class CacheLocDetector : public StmtVisitor {
    * \param related_blocks Producer blocks for cache_write, or consumer blocks for cache_read
    */
   CacheLocDetector(const ScheduleState self, const StmtSRef& block_sref, const StmtSRef& scope_sref,
-                   const std::vector<StmtSRef>& related_blocks)
+                   const std::vector<StmtSRef>& related_blocks, Optional<String> block_filter = NullOpt)
       : self_(self),
         block_sref_(block_sref),
         scope_sref_(scope_sref),
-        related_blocks_(related_blocks) {}
+        related_blocks_(related_blocks),
+        block_filter_(block_filter) {}
 
   void VisitStmt_(const SeqStmtNode* seq_stmt) final {
     bool previous_visited_block = visited_block_;
@@ -692,7 +808,24 @@ class CacheLocDetector : public StmtVisitor {
     visited_block_ = visited_block_ || previous_visited_block;
   }
 
+  void VisitStmt_(const BlockRealizeNode* block_realize) final {
+    StmtVisitor::VisitStmt_(block_realize);
+    if (block_filter_.defined()) {
+      if (block_realize->block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = false;
+      }
+    }
+  }
+
   void VisitStmt_(const BlockNode* block) final {
+    if (block_filter_.defined()) {
+      if (block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = true;
+      }
+      if (!inside_filtered_block && block->name_hint != "root") {
+        return;
+      }
+    }
     // Only visit the current scope under buffer writer's parent block
     if (block == scope_sref_->stmt) {
       // The block visited is the current parent scope
@@ -745,6 +878,10 @@ class CacheLocDetector : public StmtVisitor {
   StmtSRef loc_sref_{nullptr};
   /*! \brief The index to insert the cache_read/cache_write stage */
   int loc_pos_{-1};
+  /*! \brief The block filter to apply */
+  Optional<String> block_filter_;
+  /*! \brief A flag indicates whether inside filtered block. */
+  bool inside_filtered_block{false};
 };
 
 /*! \brief Detect the insertion position of the new cache stage */
@@ -835,6 +972,143 @@ class CacheInplaceLocDetector : public StmtVisitor {
   int loc_pos_{-1};
 };
 
+
+/*! \brief Mutator for ReverseCacheRead. */
+class ReverseCacheReadRewriter : public StmtExprMutator {
+ public:
+  /*!
+   * \brief Rewrite the AST and add a cache_read stage with the information provided.
+   * \param scope_sref The parent scope of this mutation.
+   * \param info The cache stage information.
+   * \param touched_info The reverse cache touched information.
+   * \param block_filter The block filter to apply.
+   * \return The new AST rooting at the original parent scope.
+   */
+  static Stmt Rewrite(const StmtSRef& scope_sref, CacheStageInfo* info,
+                      ReverseCacheTouchedInfo* touched_info, Optional<String> block_filter = NullOpt) {
+    ReverseCacheReadRewriter rewriter(scope_sref, info, touched_info, block_filter);
+    return rewriter(GetRef<Stmt>(scope_sref->stmt));
+  }
+
+ private:
+  explicit ReverseCacheReadRewriter(const StmtSRef& scope_sref, CacheStageInfo* info,
+                                    ReverseCacheTouchedInfo* touched_info,
+                                    Optional<String> block_filter = NullOpt)
+      : scope_sref_(scope_sref), info_(info), block_filter_(block_filter) {
+    for (const IterVar& iter_var : touched_info->block_vars) {
+      new_indices_.push_back(iter_var->var);
+    }
+  }
+
+  Stmt VisitStmt_(const ForNode* loop) final {
+    Stmt stmt = StmtMutator::VisitStmt_(loop);
+    // Check the insertion point
+    if (loop == info_->loc_sref->stmt) {
+      // Insert cache stage into the loop if it is the right place
+      ObjectPtr<ForNode> n = make_object<ForNode>(*stmt.as<ForNode>());
+      n->body = InsertCacheStage(n->body, info_->loc_pos, info_->cache_stage);
+      stmt = Stmt(n);
+    }
+    return stmt;
+  }
+
+  Stmt VisitStmt_(const BlockRealizeNode* block_realize) final {
+    Stmt stmt = StmtMutator::VisitStmt_(block_realize);
+    if (block_filter_.defined()) {
+      if (block_realize->block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = false;
+      }
+    }
+    return stmt;
+  }
+
+  Stmt VisitStmt_(const BlockNode* block) final {
+    if (block_filter_.defined()) {
+      if (block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = true;
+      }
+      if (!inside_filtered_block && block->name_hint != "root") {
+        return GetRef<Block>(block);
+      }
+    }
+    Block old_stmt = GetRef<Block>(block);
+    if (block != scope_sref_->stmt &&
+        GetBufferRegionFromBuffer(block->writes, info_->read_buffer).defined()) {
+      return std::move(old_stmt);
+    }
+    // Mutate the body
+    Block stmt = Downcast<Block>(StmtMutator::VisitStmt_(block));
+    // Check the insertion point
+    if (block == info_->loc_sref->stmt) {
+      // Insert cache stage into the block if it is the right place
+      ObjectPtr<BlockNode> n = make_object<BlockNode>(*stmt.as<BlockNode>());
+      n->body = InsertCacheStage(n->body, info_->loc_pos, info_->cache_stage);
+      stmt = Block(n);
+    }
+    // Check if it is the block corresponding to the parent scope
+    if (block == scope_sref_->stmt) {
+      // If so, put buffer allocation on the parent scope
+      ObjectPtr<BlockNode> n = make_object<BlockNode>(*stmt.as<BlockNode>());
+      if (info_->alloc.defined()) {
+        n->alloc_buffers.push_back(info_->alloc.value());
+      }
+      stmt = Block(n);
+    } else {
+      // Otherwise, update read regions and match_buffers
+      Array<BufferRegion> reads;
+      for (const BufferRegion& buf_region : block->reads) {
+        if (buf_region->buffer.same_as(info_->read_buffer)) {
+          Array<Range> region;
+          for (const PrimExpr index : new_indices_) {
+            region.push_back(Range::FromMinExtent(index, Integer(1)));
+          }
+          reads.push_back(BufferRegion(info_->write_buffer, region));
+        } else {
+          reads.push_back(buf_region);
+        }
+      }
+
+      // NOTE(Zihao): do not process match buffers for now.
+      if (!reads.same_as(block->reads)) {
+        ObjectPtr<BlockNode> n = make_object<BlockNode>(*stmt.as<BlockNode>());
+        n->reads = std::move(reads);
+        stmt = Block(n);
+      }
+    }
+    info_->block_reuse.Set(old_stmt, stmt);
+    return std::move(stmt);
+  }
+
+  PrimExpr VisitExpr_(const VarNode* op) final {
+    if (op == info_->read_buffer->data.get()) {
+      return info_->write_buffer->data;
+    }
+    return GetRef<PrimExpr>(op);
+  }
+
+  PrimExpr VisitExpr_(const BufferLoadNode* load) final {
+    if (load->buffer.same_as(info_->read_buffer)) {
+      ObjectPtr<BufferLoadNode> n = make_object<BufferLoadNode>(*load);
+      n->buffer = info_->write_buffer;
+      n->indices = new_indices_;
+      return PrimExpr(n);
+    }
+    return ExprMutator::VisitExpr_(load);
+  }
+
+  /*! \brief The parent scope of the insertion */
+  const StmtSRef& scope_sref_;
+  /*! \brief The info for inserting cache stage */
+  CacheStageInfo* info_;
+  /*! \brief The indices to use for new buffer. */
+  Array<PrimExpr> new_indices_;
+  /*! \brief The block filter to apply */
+  Optional<String> block_filter_;
+  /*! \brief A flag indicates whether inside filtered block. */
+  bool inside_filtered_block{false};
+};
+
+
 class ReindexCacheReadRewriter;
 
 /*! \brief Mutator for CacheRead. */
@@ -844,20 +1118,22 @@ class CacheReadRewriter : public StmtExprMutator {
    * \brief Rewrite the AST and add a cache_read stage with the information provided
    * \param scope_sref The parent scope of this mutation
    * \param info The cache stage information
+   * \param block_filter The block filter to apply.
    * \param cache_full_region A boolean indicating if the cache buffer is allocated with
    *        full region or compact region.
    * \return The new AST rooting at the original parent scope
    */
   static Stmt Rewrite(const StmtSRef& scope_sref, CacheStageInfo* info,
+                      Optional<String> block_filter = NullOpt,
                       bool cache_full_region = true) {
-    CacheReadRewriter rewriter(scope_sref, info, cache_full_region);
+    CacheReadRewriter rewriter(scope_sref, info, block_filter, cache_full_region);
     return rewriter(GetRef<Stmt>(scope_sref->stmt));
   }
 
  private:
-  explicit CacheReadRewriter(const StmtSRef& scope_sref, CacheStageInfo* info,
+  explicit CacheReadRewriter(const StmtSRef& scope_sref, CacheStageInfo* info, Optional<String> block_filter = NullOpt,
                              bool cache_full_region = true)
-      : scope_sref_(scope_sref), info_(info), cache_full_region_(cache_full_region) {
+      : scope_sref_(scope_sref), info_(info), cache_full_region_(cache_full_region), block_filter_(block_filter) {
     auto update_region = [this](const Region& region, const Region& offset) -> Region {
       ICHECK_EQ(region.size(), offset.size());
       std::vector<Range> ret;
@@ -916,7 +1192,25 @@ class CacheReadRewriter : public StmtExprMutator {
     return stmt;
   }
 
+  Stmt VisitStmt_(const BlockRealizeNode* block_realize) final {
+    Stmt stmt = StmtMutator::VisitStmt_(block_realize);
+    if (block_filter_.defined()) {
+      if (block_realize->block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = false;
+      }
+    }
+    return stmt;
+  }
+
   Stmt VisitStmt_(const BlockNode* block) override {
+    if (block_filter_.defined()) {
+      if (block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = true;
+      }
+      if (!inside_filtered_block && block->name_hint != "root") {
+        return GetRef<Block>(block);
+      }
+    }
     Block old_stmt = GetRef<Block>(block);
     // Check if this block is one of the specified consumers.
     // If no consumer blocks are specified, all blocks should be considered consumers.
@@ -1005,6 +1299,10 @@ class CacheReadRewriter : public StmtExprMutator {
   const StmtSRef& scope_sref_;
   /*! \brief The info for inserting cache stage */
   CacheStageInfo* info_;
+  /*! \brief The block filter to apply */
+  Optional<String> block_filter_;
+  /*! \brief A flag indicates whether inside filtered block. */
+  bool inside_filtered_block{false};
   /*! \brief Whether the most recently visited block is a specified consumer. */
   bool current_block_consumes;
   /*! \brief function to update read/write region of block being cache read.*/
@@ -1020,6 +1318,185 @@ class CacheReadRewriter : public StmtExprMutator {
   arith::Analyzer ana_;
 
   friend ReindexCacheReadRewriter;
+};
+
+/*! \brief Mutator for ReverseCacheWrite. */
+class ReverseCacheWriteRewriter : public StmtExprMutator {
+ public:
+  /*!
+   * \brief Rewrite the AST and add a cache_write stage with the information provided.
+   * \param scope_sref The parent scope of this mutation.
+   * \param writer_block_sref The only writer block in the scope.
+   * \param info The cache stage information.
+   * \param touched_info The reverse cache touched information.
+   * \param block_filter The block filter to apply.
+   * \return The new AST rooting at the original parent scope.
+   */
+  static Stmt Rewrite(const StmtSRef& scope_sref, const StmtSRef& writer_block_sref,
+                      CacheStageInfo* info, ReverseCacheTouchedInfo* touched_info,
+                      Optional<String> block_filter = NullOpt) {
+    ReverseCacheWriteRewriter rewriter(scope_sref, writer_block_sref, info, touched_info,
+                                       block_filter);
+    return rewriter(GetRef<Stmt>(scope_sref->stmt));
+  }
+
+ private:
+  explicit ReverseCacheWriteRewriter(const StmtSRef& scope_sref, const StmtSRef& writer_block_sref,
+                                     CacheStageInfo* info, ReverseCacheTouchedInfo* touched_info,
+                                     Optional<String> block_filter = NullOpt)
+      : scope_sref_(scope_sref),
+        writer_block_sref_(writer_block_sref),
+        info_(info),
+        block_filter_(block_filter) {
+    for (const IterVar& iter_var : touched_info->block_vars) {
+      new_indices_.push_back(iter_var->var);
+    }
+  }
+
+  Stmt VisitStmt_(const ForNode* loop) final {
+    Stmt stmt = StmtMutator::VisitStmt_(loop);
+    // Check the insertion point
+    if (loop == info_->loc_sref->stmt) {
+      // Insert cache stage into the loop if it is the right place
+      ObjectPtr<ForNode> n = make_object<ForNode>(*stmt.as<ForNode>());
+      n->body = InsertCacheStage(n->body, info_->loc_pos, info_->cache_stage);
+      stmt = Stmt(n);
+    }
+    return stmt;
+  }
+
+  Stmt VisitStmt_(const BlockRealizeNode* block_realize) final {
+    Stmt stmt = StmtMutator::VisitStmt_(block_realize);
+    if (block_filter_.defined()) {
+      if (block_realize->block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = false;
+      }
+    }
+    return stmt;
+  }
+
+  Stmt VisitStmt_(const BlockNode* block) final {
+    if (block_filter_.defined()) {
+      if (block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = true;
+      }
+      if (!inside_filtered_block && block->name_hint != "root") {
+        return GetRef<Block>(block);
+      }
+    }
+
+    Block old_stmt = GetRef<Block>(block);
+    // We only mutate the block which generates info->write_buffer
+    if (block != writer_block_sref_->stmt && block != scope_sref_->stmt && !under_writer_block_) {
+      return std::move(old_stmt);
+    }
+
+    // Mutate the body
+    bool under_scope = under_writer_block_ || block == writer_block_sref_->stmt;
+    std::swap(under_scope, under_writer_block_);
+    Block stmt = Downcast<Block>(StmtMutator::VisitStmt_(block));
+    std::swap(under_scope, under_writer_block_);
+
+    // Find the insertion point
+    if (block == info_->loc_sref->stmt) {
+      ObjectPtr<BlockNode> n = make_object<BlockNode>(*stmt.as<BlockNode>());
+      n->body = InsertCacheStage(n->body, info_->loc_pos, info_->cache_stage);
+      stmt = Block(n);
+    }
+    // Put buffer allocation on the parent scope
+    if (block == scope_sref_->stmt) {
+      ObjectPtr<BlockNode> n = make_object<BlockNode>(*stmt.as<BlockNode>());
+      if (info_->alloc.defined()) {
+        n->alloc_buffers.push_back(info_->alloc.value());
+      }
+      stmt = Block(n);
+    } else {
+      // Since cache_write changes the block, we need to update the buffer it writes
+      Array<BufferRegion> reads, writes;
+      // New reads info.
+      for (const BufferRegion& buf_region : block->reads) {
+        if (buf_region->buffer.same_as(info_->write_buffer)) {
+          Array<Range> region;
+          for (const PrimExpr index : new_indices_) {
+            region.push_back(Range::FromMinExtent(index, Integer(1)));
+          }
+          reads.push_back(BufferRegion(info_->read_buffer, region));
+        } else {
+          reads.push_back(buf_region);
+        }
+      }
+      // New writes info, same as above.
+      for (const BufferRegion& buf_region : block->writes) {
+        if (buf_region->buffer.same_as(info_->write_buffer)) {
+          Array<Range> region;
+          for (const PrimExpr index : new_indices_) {
+            region.push_back(Range::FromMinExtent(index, Integer(1)));
+          }
+          writes.push_back(BufferRegion(info_->read_buffer, region));
+        } else {
+          writes.push_back(buf_region);
+        }
+      }
+
+      // NOTE(Zihao): do not process match buffers for now.
+      if (!writes.same_as(block->writes) || !reads.same_as(block->reads)) {
+        ObjectPtr<BlockNode> n = make_object<BlockNode>(*stmt.as<BlockNode>());
+        n->writes = std::move(writes);
+        n->reads = std::move(reads);
+        stmt = Block(n);
+      }
+    }
+    // Remove atomic flag
+    ObjectPtr<BlockNode> n = make_object<BlockNode>(*stmt.as<BlockNode>());
+    n->annotations.erase("atomic");
+    stmt = Block(n);
+    info_->block_reuse.Set(old_stmt, stmt);
+    return std::move(stmt);
+  }
+
+  PrimExpr VisitExpr_(const VarNode* op) final {
+    if (op == info_->write_buffer->data.get()) {
+      return info_->read_buffer->data;
+    }
+    return GetRef<PrimExpr>(op);
+  }
+
+  Stmt VisitStmt_(const BufferStoreNode* store) final {
+    BufferStore stmt = Downcast<BufferStore>(StmtMutator::VisitStmt_(store));
+    if (stmt->buffer.same_as(info_->write_buffer)) {
+      auto n = CopyOnWrite(stmt.get());
+      n->buffer = info_->read_buffer;
+      n->indices = new_indices_;
+      return Stmt(n);
+    } else {
+      return std::move(stmt);
+    }
+  }
+
+  PrimExpr VisitExpr_(const BufferLoadNode* load) final {
+    if (load->buffer.same_as(info_->write_buffer)) {
+      ObjectPtr<BufferLoadNode> n = make_object<BufferLoadNode>(*load);
+      n->buffer = info_->read_buffer;
+      n->indices = new_indices_;
+      return PrimExpr(n);
+    }
+    return ExprMutator::VisitExpr_(load);
+  }
+
+  /*! \brief The parent scope of the insertion. */
+  const StmtSRef& scope_sref_;
+  /*! \brief The parent scope of the insertion. */
+  const StmtSRef& writer_block_sref_;
+  /*! \brief The info for inserting cache stage. */
+  CacheStageInfo* info_;
+  /*! \brief The indices to use for new buffer. */
+  Array<PrimExpr> new_indices_;
+  /*! \brief Whether the current node is under the given block. */
+  bool under_writer_block_{false};
+  /*! \brief The block filter to apply. */
+  Optional<String> block_filter_;
+  /*! \brief A flag indicates whether inside filtered block. */
+  bool inside_filtered_block{false};
 };
 
 /*! \brief Mutator for ReindexCacheRead. */
@@ -1098,22 +1575,24 @@ class CacheWriteRewriter : public StmtExprMutator {
    * \param scope_sref The parent scope of this mutation.
    * \param writer_block_sref The only writer block in the scope.
    * \param info The cache stage information.
+   * \param block_filter The block filter to apply.
    * \param cache_full_region A boolean indicating if the cache buffer is allocated with
    *        full region or compact region.
    * \return The new AST rooting at the original parent scope.
    */
   static Stmt Rewrite(const StmtSRef& scope_sref, const StmtSRef& writer_block_sref,
-                      CacheStageInfo* info, bool cache_full_region = true) {
-    CacheWriteRewriter rewriter(scope_sref, writer_block_sref, info, cache_full_region);
+                      CacheStageInfo* info, Optional<String> block_filter = NullOpt, bool cache_full_region = true) {
+    CacheWriteRewriter rewriter(scope_sref, writer_block_sref, info, block_filter, cache_full_region);
     return rewriter(GetRef<Stmt>(scope_sref->stmt));
   }
 
  private:
   explicit CacheWriteRewriter(const StmtSRef& scope_sref, const StmtSRef& writer_block_sref,
-                              CacheStageInfo* info, bool cache_full_region = true)
+                              CacheStageInfo* info, Optional<String> block_filter = NullOpt, bool cache_full_region = true)
       : scope_sref_(scope_sref),
         writer_block_sref_(writer_block_sref),
         info_(info),
+        block_filter_(block_filter),
         cache_full_region_(cache_full_region) {
     auto update_region = [this](const Region& region, const Region& offset) -> Region {
       ICHECK_EQ(region.size(), offset.size());
@@ -1173,7 +1652,26 @@ class CacheWriteRewriter : public StmtExprMutator {
     return stmt;
   }
 
+  Stmt VisitStmt_(const BlockRealizeNode* block_realize) final {
+    Stmt stmt = StmtMutator::VisitStmt_(block_realize);
+    if (block_filter_.defined()) {
+      if (block_realize->block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = false;
+      }
+    }
+    return stmt;
+  }
+
   Stmt VisitStmt_(const BlockNode* block) override {
+    if (block_filter_.defined()) {
+      if (block->annotations.Get(block_filter_.value()).defined()) {
+        inside_filtered_block = true;
+      }
+      if (!inside_filtered_block && block->name_hint != "root") {
+        return GetRef<Block>(block);
+      }
+    }
+
     Block old_stmt = GetRef<Block>(block);
 
     // Check if this block is one of the specified cache consumers.
@@ -1239,6 +1737,10 @@ class CacheWriteRewriter : public StmtExprMutator {
         stmt = Block(n);
       }
     }
+    // Remove atomic flag
+    ObjectPtr<BlockNode> n = make_object<BlockNode>(*stmt.as<BlockNode>());
+    n->annotations.erase("atomic");
+    stmt = Block(n);
     info_->block_reuse.Set(old_stmt, stmt);
     return std::move(stmt);
   }
@@ -1293,6 +1795,10 @@ class CacheWriteRewriter : public StmtExprMutator {
   CacheStageInfo* info_;
   /*! \brief Whether the current node is under the given block. */
   bool under_writer_block_{false};
+  /*! \brief The block filter to apply. */
+  Optional<String> block_filter_;
+  /*! \brief A flag indicates whether inside filtered block. */
+  bool inside_filtered_block{false};
   /*! \brief function to update read/write region of block being cache write.*/
   std::function<Array<BufferRegion>(Array<BufferRegion>)> update_access_regions;
   /*! \brief function to update match buffers of block being cache write.*/
@@ -1698,6 +2204,7 @@ StmtSRef CacheRead(ScheduleState self, const StmtSRef& block_sref, int read_buff
   // Step 2. Create CacheStageInfo
   CacheStageInfo info;
   info.read_buffer = read_buffer;
+  info.annotations = block->annotations;
 
   // info.consumer_blocks indicates which buffers should consume the cache.
   for (auto consumer : consumer_blocks) {
@@ -1718,7 +2225,7 @@ StmtSRef CacheRead(ScheduleState self, const StmtSRef& block_sref, int read_buff
     StmtSRef parent_sref = GetRef<StmtSRef>(write_block_sref->parent);
 
     // Detect insert position
-    CacheLocDetector::Detect</*is_cache_read=*/true>(self, write_block_sref, scope_sref, &info);
+    CacheLocDetector::Detect</*is_cache_read=*/true>(self, write_block_sref, scope_sref, &info, self->block_filter);
     cache_region = RelaxBufferRegion(self, region, write_block_sref, parent_sref, info.loc_sref);
   } else {
     // Case 2. The buffer is the input block for the scope.
@@ -1751,6 +2258,7 @@ StmtSRef CacheRead(ScheduleState self, const StmtSRef& block_sref, int read_buff
       MakeCacheStage(/*cache_region=*/cache_region, /*info=*/&info,
                      /*storage_scope=*/storage_scope, /*cache_full_region=*/cache_full_region);
   Stmt new_scope = CacheReadRewriter::Rewrite(/*scope_sref=*/scope_sref, /*info=*/&info,
+                                              /*block_filter=*/self->block_filter,
                                               /*cache_full_region=*/cache_full_region);
 
   // Step 5. Replacing and updating flags.
@@ -1789,6 +2297,7 @@ StmtSRef CacheWrite(ScheduleState self, const StmtSRef& block_sref, int write_bu
   CacheStageInfo info;
   // Create the corresponding buffer to be written, i.e. result of cache_write
   info.write_buffer = write_buffer;
+  info.annotations = block->annotations;
 
   // info.consumer_blocks indicates which buffers should consume the cache.
   for (auto consumer : consumer_blocks) {
@@ -1799,13 +2308,15 @@ StmtSRef CacheWrite(ScheduleState self, const StmtSRef& block_sref, int write_bu
   }
 
   // Step 3. Check the only writer block.
-  ICHECK_EQ(block_sref.get(), GetOnlyWriteBlock(self, scope_sref, write_buffer).get());
+  if (!IsComposable(self, block_sref)) {
+    ICHECK_EQ(block_sref.get(), GetOnlyWriteBlock(self, scope_sref, write_buffer).get());
+  }
 
   // Step 4. Find the producing region and insert position
   BufferRegion region = GetBufferRegionFromBuffer(block->writes, write_buffer).value();
   StmtSRef parent_sref = GetRef<StmtSRef>(block_sref->parent);
   // Detect insert position
-  CacheLocDetector::Detect</*is_cache_read=*/false>(self, block_sref, scope_sref, &info);
+  CacheLocDetector::Detect</*is_cache_read=*/false>(self, block_sref, scope_sref, &info, self->block_filter);
   BufferRegion cache_region =
       RelaxBufferRegion(self, region, block_sref, parent_sref, info.loc_sref);
 
@@ -1829,6 +2340,7 @@ StmtSRef CacheWrite(ScheduleState self, const StmtSRef& block_sref, int write_bu
                      /*storage_scope=*/storage_scope, /*cache_full_region=*/cache_full_region);
   Stmt new_scope = CacheWriteRewriter::Rewrite(/*scope_sref=*/scope_sref,
                                                /*writer_block_sref=*/block_sref, /*info=*/&info,
+                                               /*block_filter=*/self->block_filter,
                                                /*cache_full_region=*/cache_full_region);
 
   // Step 6. Replacing and updating flags.
@@ -2307,6 +2819,259 @@ StmtSRef ReIndex(ScheduleState self, const StmtSRef& block_sref, int buffer_inde
   return result_block_sref;
 }
 
+
+class VarCollector : public ExprVisitor {
+ public:
+  VarCollector() {}
+  std::unordered_set<const VarNode*> touched;
+
+ private:
+  void VisitExpr_(const VarNode* op) final { touched.insert(op); }
+};
+
+StmtSRef ReverseCacheRead(ScheduleState self, const StmtSRef& block_sref, int read_buffer_index,
+                          const String& storage_scope, Array<Integer> dim_order) {
+  /*!
+   * Check:
+   *   - The index is in the array of block reading region
+   *   - There is at most one block who write the buffer in the scope
+   *
+   * Mutate:
+   *   - Allocate new cache buffer under the current scope.
+   *   - Find the lowest ancestor of the block and ANY ONE of the consumers blocks.
+   *   - Copy the buffer with the consumed region.
+   */
+
+  // Step 0. Check the input storage scope.
+  CheckStorageScope(self, storage_scope);
+
+  // Step 1. Check index, getting the target buffer and the parent scope
+  const BlockNode* block = TVM_SREF_TO_BLOCK(block_sref);
+  Buffer read_buffer =
+      GetNthAccessBuffer(self, GetRef<Block>(block), read_buffer_index, tir::BufferIndexType::kRead);
+  StmtSRef scope_sref = GetScopeRoot(self, block_sref, /*require_stage_pipeline=*/true);
+  const BlockNode* scope_block = TVM_SREF_TO_BLOCK(scope_sref);
+
+  // Step 2. Create CacheStageInfo
+  CacheStageInfo info;
+  info.read_buffer = read_buffer;
+  info.annotations = block->annotations;
+
+  // Step 3. Update cache stage info.
+  Optional<BufferRegion> maybe_region = GetBufferRegionFromBuffer(block->reads, read_buffer);
+  ICHECK(maybe_region.defined()) << read_buffer
+                                 << " should appear in the block's read region: " << block->reads;
+  BufferRegion cache_region = maybe_region.value();
+  if (Optional<StmtSRef> _write_block_sref = GetOnlyWriteBlock(self, scope_sref, read_buffer)) {
+    // Case 1. The buffer is written inside the block.
+    StmtSRef write_block_sref = _write_block_sref.value();
+    const BlockNode* write_block = TVM_SREF_TO_BLOCK(write_block_sref);
+    // Find the producing region
+    StmtSRef parent_sref = GetRef<StmtSRef>(write_block_sref->parent);
+    // Detect insert position
+    CacheLocDetector::Detect<true>(self, write_block_sref, scope_sref, &info, self->block_filter);
+  } else {
+    // Case 2. The buffer is the input block for the scope.
+    info.loc_sref = scope_sref;
+    info.loc_pos = 0;
+  }
+
+  // Step 4. Create CacheTouchedInfo
+  ReverseCacheTouchedInfo touched_info;
+
+  // Step 5. Update CacheTouchedInfo
+  touched_info.read = true;
+  VarCollector collector;
+  Array<PrimExpr> new_shape;
+  for (const Range& range : cache_region->region) {
+    collector(range->min);
+  }
+  BlockRealize realize = GetBlockRealize(self, block_sref);
+  std::unordered_set<int> dim_order_set;
+  for (const Integer& idx : dim_order) {
+    dim_order_set.insert(idx->value);
+  }
+  for (size_t idx = 0; idx < block->iter_vars.size(); ++idx) {
+    const IterVar& block_var = block->iter_vars[idx];
+    if (collector.touched.count(block_var->var.get())) {
+      if (dim_order_set.empty()) {
+        // no user defined dim order.
+        dim_order.push_back(idx);
+      } else {
+        // user provide dim order, check whether it's valid.
+        CHECK(dim_order_set.count(idx))
+            << "Block iter_var " << block_var
+            << " used in the block, but doesn't appear in user-specified dim order array.";
+      }
+    }
+  }
+
+  for (size_t i = 0; i < dim_order.size(); ++i) {
+    int idx = dim_order[i]->value;
+    const IterVar& block_var = block->iter_vars[idx];
+    touched_info.block_vars.push_back(block_var);
+    touched_info.iter_values.push_back(realize->iter_values[idx]);
+    new_shape.push_back(block_var->dom->min + block_var->dom->extent);
+    collector(touched_info.iter_values.back());
+  }
+
+  for (const StmtSRef& loop_sref : GetLoopsUnderScope(block_sref, info.loc_sref)) {
+    const ForNode* loop = TVM_SREF_TO_FOR(loop_sref);
+    if (collector.touched.count(loop->loop_var.get())) {
+      touched_info.loop_vars.push_back(loop->loop_var);
+      touched_info.loop_ranges.push_back(Range::FromMinExtent(loop->min, loop->extent));
+    }
+  }
+
+  // Create write buffer.
+  ObjectPtr<BufferNode> new_buffer = make_object<BufferNode>(*read_buffer.get());
+  ObjectPtr<VarNode> new_var = make_object<VarNode>(*read_buffer->data.get());
+  const auto* ptr_type = TVM_TYPE_AS(read_buffer->data->type_annotation, PointerTypeNode);
+  new_var->type_annotation = PointerType(ptr_type->element_type, storage_scope);
+  new_buffer->data = Var(new_var->name_hint + "_" + storage_scope, new_var->type_annotation);
+  new_buffer->name = read_buffer->name + "_" + storage_scope;
+  new_buffer->shape = new_shape;
+
+  info.write_buffer = Buffer(new_buffer);
+  info.alloc = info.write_buffer;
+
+  // Step 6. Making new cache stage block and rewrite readers.
+  Block cache_read_stage = MakeReverseCacheStage(/*cache_region=*/cache_region,
+                                                 /*touched_info=*/&touched_info, /*info=*/&info,
+                                                 /*storage_scope=*/storage_scope);
+  Stmt new_scope = ReverseCacheReadRewriter::Rewrite(/*scope_sref=*/scope_sref, /*info=*/&info,
+                                                     /*touched_info=*/&touched_info,
+                                                     /*block_filter=*/self->block_filter);
+
+  // Step 7. Replacing and updating flags.
+  self->Replace(scope_sref, new_scope, info.block_reuse);
+  StmtSRef result_block_sref = self->stmt2ref.at(cache_read_stage.get());
+  BlockInfo& block_info = self->block_info[result_block_sref];
+  block_info.affine_binding = CalculateAffineFlag(self, result_block_sref);
+  block_info.region_cover = true;
+  block_info.stage_pipeline = true;
+  return result_block_sref;
+}
+
+StmtSRef ReverseCacheWrite(ScheduleState self, const StmtSRef& block_sref, int write_buffer_index,
+                           const String& storage_scope, Array<Integer> dim_order) {
+  /*!
+   * Check:
+   *   - The index is in the array of block reading region
+   *   - There is only one block who write the buffer in the scope
+   *
+   * Mutate:
+   *   - Allocate new cache buffer under the current scope.
+   *   - Find the lowest ancestor of the block and ANY ONE of the producer blocks.
+   *   - Copy the buffer with the consumed region.
+   */
+
+  // Step 0. Check the input storage scope.
+  CheckStorageScope(self, storage_scope);
+
+  // Step 1. Checking index, getting the target buffer and the parent scope
+  const BlockNode* block = TVM_SREF_TO_BLOCK(block_sref);
+  Buffer write_buffer =
+      GetNthAccessBuffer(self, GetRef<Block>(block), write_buffer_index, tir::BufferIndexType::kWrite);
+  StmtSRef scope_sref = GetScopeRoot(self, block_sref, /*require_stage_pipeline=*/true);
+
+  // Step 2. Creating CacheStageInfo
+  CacheStageInfo info;
+  info.write_buffer = write_buffer;
+  info.annotations = block->annotations;
+
+  // Step 3. Check the only writer block.
+  if (!IsComposable(self, block_sref)) {
+    ICHECK_EQ(block_sref.get(), GetOnlyWriteBlock(self, scope_sref, write_buffer).get());
+  }
+
+  // Step 4. Find the producing region and insert position
+  Optional<BufferRegion> maybe_region = GetBufferRegionFromBuffer(block->writes, write_buffer);
+  ICHECK(maybe_region.defined()) << write_buffer << " should appear in the block's write region";
+  StmtSRef parent_sref = GetRef<StmtSRef>(block_sref->parent);
+  // Detect insert position
+  CacheLocDetector::Detect<false>(self, block_sref, scope_sref, &info, self->block_filter);
+  BufferRegion cache_region = maybe_region.value();
+
+  // Step 5. Create CacheTouchedInfo
+  ReverseCacheTouchedInfo touched_info;
+
+  // Step 6. Update CacheTouchedInfo
+  touched_info.read = false;
+  VarCollector collector;
+  Array<PrimExpr> new_shape;
+  for (const Range& range : cache_region->region) {
+    collector(range->min);
+  }
+  BlockRealize realize = GetBlockRealize(self, block_sref);
+  std::unordered_set<int> dim_order_set;
+  for (const Integer& idx : dim_order) {
+    dim_order_set.insert(idx->value);
+  }
+  for (size_t idx = 0; idx < block->iter_vars.size(); ++idx) {
+    const IterVar& block_var = block->iter_vars[idx];
+    if (collector.touched.count(block_var->var.get())) {
+      if (dim_order_set.empty()) {
+        // no user defined dim order.
+        dim_order.push_back(idx);
+      } else {
+        // user provide dim order, check whether it's valid.
+        CHECK(dim_order_set.count(idx))
+            << "Block iter_var " << block_var
+            << " used in the block, but doesn't appear in user-specified dim order array.";
+      }
+    }
+  }
+
+  for (size_t i = 0; i < dim_order.size(); ++i) {
+    int idx = dim_order[i]->value;
+    const IterVar& block_var = block->iter_vars[idx];
+    touched_info.block_vars.push_back(block_var);
+    touched_info.iter_values.push_back(realize->iter_values[idx]);
+    new_shape.push_back(block_var->dom->min + block_var->dom->extent);
+    collector(touched_info.iter_values.back());
+  }
+
+  for (const StmtSRef& loop_sref : GetLoopsUnderScope(block_sref, info.loc_sref)) {
+    const ForNode* loop = TVM_SREF_TO_FOR(loop_sref);
+    if (collector.touched.count(loop->loop_var.get())) {
+      touched_info.loop_vars.push_back(loop->loop_var);
+      touched_info.loop_ranges.push_back(Range::FromMinExtent(loop->min, loop->extent));
+    }
+  }
+
+  // Create write buffer.
+  ObjectPtr<BufferNode> new_buffer = make_object<BufferNode>(*write_buffer.get());
+  ObjectPtr<VarNode> new_var = make_object<VarNode>(*write_buffer->data.get());
+  const auto* ptr_type =
+      TVM_TYPE_AS(write_buffer->data->type_annotation, PointerTypeNode);
+  new_var->type_annotation = PointerType(ptr_type->element_type, storage_scope);
+  new_buffer->data = Var(new_var->name_hint + "_" + storage_scope, new_var->type_annotation);
+  new_buffer->name = write_buffer->name + "_" + storage_scope;
+  new_buffer->shape = new_shape;
+
+  info.read_buffer = Buffer(new_buffer);
+  info.alloc = info.read_buffer;
+
+  // Step 7. Making new cache stage block and rewrite readers.
+  Block cache_write_stage = MakeReverseCacheStage(/*cache_region=*/cache_region,
+                                                  /*touched_info=*/&touched_info, /*info=*/&info,
+                                                  /*storage_scope=*/storage_scope);
+  Stmt new_scope = ReverseCacheWriteRewriter::Rewrite(
+      /*scope_sref=*/scope_sref,
+      /*writer_block_sref=*/block_sref, /*info=*/&info, /*touched_info=*/&touched_info,
+      /*block_filter=*/self->block_filter);
+
+  // Step 8. Replacing and updating flags.
+  self->Replace(scope_sref, new_scope, info.block_reuse);
+  StmtSRef result_block_sref = self->stmt2ref.at(cache_write_stage.get());
+  BlockInfo& block_info = self->block_info[result_block_sref];
+  block_info.affine_binding = CalculateAffineFlag(self, result_block_sref);
+  block_info.region_cover = true;
+  block_info.stage_pipeline = true;
+  return result_block_sref;
+}
+
 /******** Instruction Registration ********/
 
 struct CacheReadTraits : public UnpackedInstTraits<CacheReadTraits> {
@@ -2492,12 +3257,73 @@ struct ReindexCacheWriteTraits : public UnpackedInstTraits<ReindexCacheWriteTrai
   friend struct ::tvm::tir::UnpackedInstTraits;
 };
 
+
+struct ReverseCacheReadTraits : public UnpackedInstTraits<ReverseCacheReadTraits> {
+  static constexpr const char* kName = "ReverseCacheRead";
+  static constexpr bool kIsPure = false;
+
+ private:
+  static constexpr size_t kNumInputs = 1;
+  static constexpr size_t kNumAttrs = 3;
+  static constexpr size_t kNumDecisions = 0;
+
+  static BlockRV UnpackedApplyToSchedule(Schedule sch, BlockRV block, Integer read_buffer_index,
+                                         String storage_scope, Array<Integer> dim_order) {
+    return sch->ReverseCacheRead(block, read_buffer_index->value, storage_scope, dim_order);
+  }
+
+  static String UnpackedAsPython(Array<String> outputs, String block, Integer read_buffer_index,
+                                 String storage_scope, Array<Integer> dim_order) {
+    PythonAPICall py("reverse_cache_read");
+    py.Input("block", block);
+    py.Input("read_buffer_index", read_buffer_index->value);
+    py.Input("storage_scope", storage_scope);
+    py.Input("dim_order", dim_order);
+    py.SingleOutput(outputs);
+    return py.Str();
+  }
+
+  template <typename>
+  friend struct ::tvm::tir::UnpackedInstTraits;
+};
+
+struct ReverseCacheWriteTraits : public UnpackedInstTraits<ReverseCacheWriteTraits> {
+  static constexpr const char* kName = "ReverseCacheWrite";
+  static constexpr bool kIsPure = false;
+
+ private:
+  static constexpr size_t kNumInputs = 1;
+  static constexpr size_t kNumAttrs = 3;
+  static constexpr size_t kNumDecisions = 0;
+
+  static BlockRV UnpackedApplyToSchedule(Schedule sch, BlockRV block, Integer write_buffer_index,
+                                         String storage_scope, Array<Integer> dim_order) {
+    return sch->ReverseCacheWrite(block, write_buffer_index->value, storage_scope, dim_order);
+  }
+
+  static String UnpackedAsPython(Array<String> outputs, String block, Integer write_buffer_index,
+                                 String storage_scope, Array<Integer> dim_order) {
+    PythonAPICall py("reverse_cache_write");
+    py.Input("block", block);
+    py.Input("write_buffer_index", write_buffer_index->value);
+    py.Input("storage_scope", storage_scope);
+    py.Input("dim_order", dim_order);
+    py.SingleOutput(outputs);
+    return py.Str();
+  }
+
+  template <typename>
+  friend struct ::tvm::tir::UnpackedInstTraits;
+};
+
 TVM_REGISTER_INST_KIND_TRAITS(CacheReadTraits);
 TVM_REGISTER_INST_KIND_TRAITS(CacheWriteTraits);
 TVM_REGISTER_INST_KIND_TRAITS(CacheInplaceTraits);
 TVM_REGISTER_INST_KIND_TRAITS(ReIndexTraits);
 TVM_REGISTER_INST_KIND_TRAITS(ReindexCacheReadTraits);
 TVM_REGISTER_INST_KIND_TRAITS(ReindexCacheWriteTraits);
+TVM_REGISTER_INST_KIND_TRAITS(ReverseCacheReadTraits);
+TVM_REGISTER_INST_KIND_TRAITS(ReverseCacheWriteTraits);
 
 }  // namespace tir
 }  // namespace tvm

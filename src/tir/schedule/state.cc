@@ -146,9 +146,10 @@ void UpdateSRef(ScheduleStateNode* self, StmtSRefNode* sref, const StmtNode* new
 /*! \brief A helper class to update BlockInfo for a ScheduleStateNode */
 class BlockInfoCollector : private StmtVisitor {
  public:
-  static void Collect(ScheduleStateNode* self, const Stmt& stmt) {
+  static auto Collect(ScheduleStateNode* self, const Stmt& stmt) {
     BlockInfoCollector collector(self);
     collector.VisitStmt(stmt);
+    return collector.buf_doms;
   }
 
  private:
@@ -181,7 +182,8 @@ class BlockInfoCollector : private StmtVisitor {
       // If the block doesn't have outer loops and BlockRealize,
       // then we set the affine binding flag as true only if the block has no block vars
       const BlockNode* block = TVM_SREF_TO_BLOCK(scope_root);
-      if (block->iter_vars.empty()) info.affine_binding = true;
+      // if (block->iter_vars.empty()) info.affine_binding = true;
+      info.affine_binding = true;
     } else {
       info.affine_binding =
           IsAffineBinding(/*realize=*/block2realize_.at(scope_root->stmt),
@@ -337,6 +339,9 @@ class BlockInfoCollector : private StmtVisitor {
     block2realize_.emplace(block, GetRef<BlockRealize>(realize));
     // Recursive visit
     PushSRef(block);
+    for (const BufferDomain& buf_dom : block->buf_doms) {
+      buf_doms.push_back(buf_dom);
+    }
     VisitStmt(block->body);  // `block->init` is not visited
     StmtSRef sref = PopSRef();
     // Create BlockInfo for the block
@@ -362,6 +367,8 @@ class BlockInfoCollector : private StmtVisitor {
   std::vector<Array<StmtSRef>> block_frames_;
   /*! \brief The auxiliary analyzer */
   arith::Analyzer analyzer_;
+  /*! \brief Collected buffer domains. */
+  Array<BufferDomain> buf_doms;
 };
 
 /**************** Constructor ****************/
@@ -379,14 +386,21 @@ ScheduleState::ScheduleState(IRModule mod, int debug_mask, bool enable_check) {
   std::unordered_map<const StmtNode*, StmtSRef> stmt2ref;
   // Set `n->stmt2ref`
   self->stmt2ref = SRefTreeCreator::Create(self->mod);
+  Array<BufferDomain> final_buf_doms;
   // Set `n->block_info`
   for (const auto& kv : n->mod->functions) {
     const BaseFunc& base_func = kv.second;
     if (auto opt = base_func.as<PrimFunc>()) {
       auto func = opt.value();
       VerifyWellFormed(func);
-      BlockInfoCollector::Collect(self, func->body);
+      auto ret = BlockInfoCollector::Collect(self, func->body);
+      final_buf_doms.insert(final_buf_doms.end(), ret.begin(), ret.end());
     }
+  }
+  for (const BufferDomain& buf_dom : final_buf_doms) {
+    const Buffer& buf = buf_dom->buffer;
+    const Range& dom = buf_dom->dom;
+    n->buf_dom_map.Set(buf, dom);
   }
   data_ = std::move(n);
 }
@@ -1008,6 +1022,10 @@ TVM_DLL Array<Bool> GetCachedFlags(const ScheduleState& self, const StmtSRef& bl
           Bool(info.region_cover),    //
           Bool(info.stage_pipeline)};
 }
+
+/**************** Block filter related API ****************/
+TVM_DLL void ScheduleStateNode::SetBlockFilter(String name) { block_filter = name; }
+TVM_DLL void ScheduleStateNode::UnsetBlockFilter() { block_filter = NullOpt; }
 
 /**************** FFI ****************/
 

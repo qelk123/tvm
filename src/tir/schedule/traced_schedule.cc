@@ -284,6 +284,16 @@ void TracedScheduleNode::ReorderBlockIterVar(const BlockRV& block_rv,
                                       /*outputs=*/{}));
 }
 
+void TracedScheduleNode::LiftLoop(const LoopRV& loop_rv) {
+  ConcreteScheduleNode::LiftLoop(loop_rv);
+
+  static const InstructionKind& kind = InstructionKind::Get("LiftLoop");
+  trace_->Append(/*inst=*/Instruction(/*kind=*/kind,
+                                      /*inputs=*/{loop_rv},
+                                      /*attrs=*/{},
+                                      /*outputs=*/{}));
+}
+
 LoopRV TracedScheduleNode::AddUnitLoop(const BlockRV& block_rv) {
   LoopRV result = ConcreteScheduleNode::AddUnitLoop(block_rv);
 
@@ -374,6 +384,36 @@ BlockRV TracedScheduleNode::CacheWrite(const BlockRV& block_rv, int write_buffer
                                       /*inputs=*/{block_rv, consumer_blocks},
                                       /*attrs=*/{Integer(write_buffer_index), storage_scope},
                                       /*outputs=*/{result}));
+  return result;
+}
+
+BlockRV TracedScheduleNode::ReverseCacheRead(const BlockRV& block_rv, int read_buffer_index,
+                                             const String& storage_scope,
+                                             Array<Integer> dim_order) {
+  BlockRV result =
+      ConcreteScheduleNode::ReverseCacheRead(block_rv, read_buffer_index, storage_scope, dim_order);
+
+  static const InstructionKind& kind = InstructionKind::Get("ReverseCacheRead");
+  trace_->Append(
+      /*inst=*/Instruction(/*kind=*/kind,
+                           /*inputs=*/{block_rv},
+                           /*attrs=*/{Integer(read_buffer_index), storage_scope, dim_order},
+                           /*outputs=*/{result}));
+  return result;
+}
+
+BlockRV TracedScheduleNode::ReverseCacheWrite(const BlockRV& block_rv, int write_buffer_index,
+                                              const String& storage_scope,
+                                              Array<Integer> dim_order) {
+  BlockRV result = ConcreteScheduleNode::ReverseCacheWrite(block_rv, write_buffer_index,
+                                                           storage_scope, dim_order);
+
+  static const InstructionKind& kind = InstructionKind::Get("ReverseCacheWrite");
+  trace_->Append(
+      /*inst=*/Instruction(/*kind=*/kind,
+                           /*inputs=*/{block_rv},
+                           /*attrs=*/{Integer(write_buffer_index), storage_scope, dim_order},
+                           /*outputs=*/{result}));
   return result;
 }
 
@@ -582,6 +622,16 @@ void TracedScheduleNode::UnsafeSetDType(const BlockRV& block_rv, int buffer_inde
       /*outputs=*/{}));
 }
 
+void TracedScheduleNode::MatchToAlloc(const BlockRV& block_rv, int buffer_index) {
+  ConcreteScheduleNode::MatchToAlloc(block_rv, buffer_index);
+  static const InstructionKind& kind = InstructionKind::Get("MatchToAlloc");
+  trace_->Append(/*inst=*/Instruction(
+      /*kind=*/kind,
+      /*inputs=*/{block_rv},
+      /*attrs=*/{Integer(buffer_index)},
+      /*outputs=*/{}));
+}
+
 /******** Schedule: Blockize & Tensorize ********/
 
 BlockRV TracedScheduleNode::Blockize(const LoopRV& loop_rv, bool preserve_unit_iters) {
@@ -650,6 +700,16 @@ void TracedScheduleNode::Annotate(const BlockRV& block_rv, const String& ann_key
                                       /*outputs=*/{}));
 }
 
+void TracedScheduleNode::Annotate(const SparseIterationRV& sp_iteration_rv, const String& ann_key,
+                                  const ObjectRef& ann_val) {
+  ConcreteScheduleNode::Annotate(sp_iteration_rv, ann_key, ann_val);
+  static const InstructionKind& kind = InstructionKind::Get("Annotate");
+  trace_->Append(/*inst=*/Instruction(/*kind=*/kind,
+                                      /*inputs=*/{sp_iteration_rv, ann_val},
+                                      /*attrs=*/{ann_key},
+                                      /*outputs=*/{}));
+}
+
 void TracedScheduleNode::Unannotate(const LoopRV& loop_rv, const String& ann_key) {
   ConcreteScheduleNode::Unannotate(loop_rv, ann_key);
   static const InstructionKind& kind = InstructionKind::Get("Unannotate");
@@ -664,6 +724,16 @@ void TracedScheduleNode::Unannotate(const BlockRV& block_rv, const String& ann_k
   static const InstructionKind& kind = InstructionKind::Get("Unannotate");
   trace_->Append(/*inst=*/Instruction(/*kind=*/kind,
                                       /*inputs=*/{block_rv},
+                                      /*attrs=*/{ann_key},
+                                      /*outputs=*/{}));
+}
+
+void TracedScheduleNode::Unannotate(const SparseIterationRV& sp_iteration_rv,
+                                    const String& ann_key) {
+  ConcreteScheduleNode::Unannotate(sp_iteration_rv, ann_key);
+  static const InstructionKind& kind = InstructionKind::Get("Unannotate");
+  trace_->Append(/*inst=*/Instruction(/*kind=*/kind,
+                                      /*inputs=*/{sp_iteration_rv},
                                       /*attrs=*/{ann_key},
                                       /*outputs=*/{}));
 }
@@ -765,6 +835,38 @@ void TracedScheduleNode::UnsafeHideBufferAccess(const BlockRV& block_rv, const S
       /*inputs=*/{block_rv, buf_type, buf_index_array},
       /*attrs=*/{},
       /*outputs=*/{}));
+}
+
+/******** Schedule: SparseTIR schedules ********/
+SparseIterationRV TracedScheduleNode::GetSparseIteration(const String& name,
+                                                         const String& func_name) {
+  SparseIterationRV result = ConcreteScheduleNode::GetSparseIteration(name, func_name);
+  // Do not support traced schedule so far.
+  return result;
+}
+
+Array<SpIterVar> TracedScheduleNode::GetSpIters(const SparseIterationRV& sp_iteration_rv) {
+  Array<SpIterVar> result = ConcreteScheduleNode::GetSpIters(sp_iteration_rv);
+  // Do not support traced schedule so far.
+  return result;
+}
+
+void TracedScheduleNode::SparseReorder(const SparseIterationRV& sp_iteration_rv,
+                                       const Array<SpIterVar>& new_order) {
+  ConcreteScheduleNode::SparseReorder(sp_iteration_rv, new_order);
+  // Do not support traced schedule so far.
+}
+
+void TracedScheduleNode::SparseFuse(const SparseIterationRV& sp_iteration_rv,
+                                    const Array<SpIterVar>& new_order) {
+  ConcreteScheduleNode::SparseFuse(sp_iteration_rv, new_order);
+  // Do not support traced schedule so far.
+}
+
+void TracedScheduleNode::HideBufAccess(const BlockRV& block_rv, const String& buf_type,
+                                       const Array<PrimExpr>& buf_index_array) {
+  ConcreteScheduleNode::HideBufAccess(block_rv, buf_type, buf_index_array);
+  // Do not support traced schedule so far.
 }
 
 }  // namespace tir

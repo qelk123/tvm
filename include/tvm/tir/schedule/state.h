@@ -99,6 +99,8 @@ class ScheduleStateNode : public Object {
  public:
   /*! \brief The AST of the module being scheduled */
   IRModule mod;
+  /*! \brief Buffer domain map defined in the module.*/
+  Map<Buffer, Range> buf_dom_map;
   /*!
    * \brief Mapping from a block sref to its correpsonding BlockInfo,
    * tracking the dependency inside the block scope,
@@ -117,6 +119,10 @@ class ScheduleStateNode : public Object {
    * \brief Whether to enable prequisite checks for schedule primitives.
    */
   bool enable_check;
+  /*!
+   * \brief The filter to apply on blocks.
+   */
+  Optional<String> block_filter = NullOpt;
 
   void VisitAttrs(AttrVisitor* v) {
     v->Visit("mod", &mod);
@@ -167,6 +173,14 @@ class ScheduleStateNode : public Object {
    */
   TVM_DLL void UpdateScopeBlockInfo(const Stmt& stmt);
   /*!
+   * \brief Set block filter.
+   */
+  TVM_DLL void SetBlockFilter(String name);
+  /*!
+   * \brief Unset block filter.
+   */
+  TVM_DLL void UnsetBlockFilter();
+  /*!
    * \brief Get the BlockScope correpsonding to the sref of scope root block
    * \param scope_root The block sref to be retrieved
    * \return The corresponding BlockScope
@@ -180,6 +194,13 @@ class ScheduleStateNode : public Object {
    * \return A boolean flag indicating if the block has quasi-affine bindings
    */
   bool IsAffineBlockBinding(const StmtSRef& block_sref) const {
+    // (SparseTIR Hack) Always return true for sparse iterations.
+    const auto* block = block_sref->StmtAs<BlockNode>();
+    Optional<ObjectRef> sparse_attr = block != nullptr ? block->annotations.Get("sparse") : NullOpt;
+    if (sparse_attr.defined() && sparse_attr.as<IntImmNode>()->value == 1) {
+      return true;
+    }
+
     return GetBlockInfo(block_sref).affine_binding;
   }
   /*!

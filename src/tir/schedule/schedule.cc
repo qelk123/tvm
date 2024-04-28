@@ -27,6 +27,8 @@ BlockRV::BlockRV() { this->data_ = make_object<BlockRVNode>(); }
 
 LoopRV::LoopRV() { this->data_ = make_object<LoopRVNode>(); }
 
+SparseIterationRV::SparseIterationRV() { this->data_ = make_object<SparseIterationRVNode>(); }
+
 /**************** GetSRef ****************/
 
 StmtSRef ScheduleNode::GetSRef(const StmtNode* stmt) const {
@@ -42,6 +44,7 @@ StmtSRef ScheduleNode::GetSRef(const StmtNode* stmt) const {
 
 TVM_REGISTER_NODE_TYPE(BlockRVNode);
 TVM_REGISTER_NODE_TYPE(LoopRVNode);
+TVM_REGISTER_NODE_TYPE(SparseIterationRVNode);
 TVM_REGISTER_OBJECT_TYPE(ScheduleNode);
 
 TVM_REGISTER_GLOBAL("tir.schedule.ScheduleGetMod")  //
@@ -65,6 +68,9 @@ TVM_REGISTER_GLOBAL("tir.schedule.ScheduleWorkOn")  //
 
 TVM_REGISTER_GLOBAL("tir.schedule.BlockRV").set_body_typed([]() { return BlockRV(); });
 TVM_REGISTER_GLOBAL("tir.schedule.LoopRV").set_body_typed([]() { return LoopRV(); });
+TVM_REGISTER_GLOBAL("tir.schedule.SparseIterationRV").set_body_typed([]() {
+  return SparseIterationRV();
+});
 TVM_REGISTER_GLOBAL("tir.schedule.ConcreteSchedule")
     .set_body_typed([](IRModule mod, support::LinearCongruentialEngine::TRandState seed,
                        int debug_mask, int error_render_level, bool enable_check) -> Schedule {
@@ -92,6 +98,9 @@ TVM_REGISTER_GLOBAL("tir.schedule.ScheduleGet")
       }
       if (auto expr_rv = obj.as<ExprRV>()) {
         return self->Get(expr_rv.value());
+      }
+      if (const auto* sp_iteration_rv = obj.as<SparseIterationRVNode>()) {
+        return self->Get(GetRef<SparseIterationRV>(sp_iteration_rv));
       }
       LOG(FATAL) << "TypeError: Cannot evaluate the random variable of type: " << obj->GetTypeKey()
                  << ". Its value is: " << obj;
@@ -121,6 +130,9 @@ TVM_REGISTER_GLOBAL("tir.schedule.ScheduleRemoveRV")
       }
       if (auto expr_rv = obj.as<ExprRV>()) {
         return self->RemoveRV(expr_rv.value());
+      }
+      if (const auto* sp_iteration_rv = obj.as<SparseIterationRVNode>()) {
+        return self->RemoveRV(GetRef<SparseIterationRV>(sp_iteration_rv));
       }
       LOG(FATAL) << "TypeError: Invalid type: " << obj->GetTypeKey();
       throw;
@@ -168,6 +180,8 @@ TVM_REGISTER_GLOBAL("tir.schedule.ScheduleReorder")
     .set_body_method<Schedule>(&ScheduleNode::Reorder);
 TVM_REGISTER_GLOBAL("tir.schedule.ScheduleReorderBlockIterVar")
     .set_body_method<Schedule>(&ScheduleNode::ReorderBlockIterVar);
+TVM_REGISTER_GLOBAL("tir.schedule.ScheduleLiftLoop")
+    .set_body_method<Schedule>(&ScheduleNode::LiftLoop);
 TVM_REGISTER_GLOBAL("tir.schedule.ScheduleAddUnitLoop")
     .set_body_typed([](Schedule self, ObjectRef rv) -> LoopRV {
       if (auto loop_rv = rv.as<LoopRV>()) {
@@ -196,6 +210,10 @@ TVM_REGISTER_GLOBAL("tir.schedule.ScheduleReindexCacheRead")
     .set_body_method<Schedule>(&ScheduleNode::ReindexCacheRead);
 TVM_REGISTER_GLOBAL("tir.schedule.ScheduleReindexCacheWrite")
     .set_body_method<Schedule>(&ScheduleNode::ReindexCacheWrite);
+TVM_REGISTER_GLOBAL("tir.schedule.ScheduleReverseCacheRead")
+    .set_body_method<Schedule>(&ScheduleNode::ReverseCacheRead);
+TVM_REGISTER_GLOBAL("tir.schedule.ScheduleReverseCacheWrite")
+    .set_body_method<Schedule>(&ScheduleNode::ReverseCacheWrite);
 TVM_REGISTER_GLOBAL("tir.schedule.ScheduleCacheInplace")
     .set_body_method<Schedule>(&ScheduleNode::CacheInplace);
 TVM_REGISTER_GLOBAL("tir.schedule.ScheduleCacheIndex")
@@ -228,6 +246,8 @@ TVM_REGISTER_GLOBAL("tir.schedule.ScheduleStorageAlign")
     .set_body_method<Schedule>(&ScheduleNode::StorageAlign);
 TVM_REGISTER_GLOBAL("tir.schedule.ScheduleSetScope")
     .set_body_method<Schedule>(&ScheduleNode::SetScope);
+TVM_REGISTER_GLOBAL("tir.schedule.ScheduleMatchToAlloc")
+    .set_body_method<Schedule>(&ScheduleNode::MatchToAlloc);
 TVM_REGISTER_GLOBAL("tir.schedule.ScheduleUnsafeSetDType")
     .set_body_method<Schedule>(&ScheduleNode::UnsafeSetDType);
 /******** (FFI) Blockize & Tensorize ********/
@@ -261,6 +281,9 @@ TVM_REGISTER_GLOBAL("tir.schedule.ScheduleAnnotate")
       }
       if (auto loop_rv = rv.as<LoopRV>()) {
         return self->Annotate(loop_rv.value(), ann_key, ann_val);
+      }
+      if (const auto* sparse_iteration_rv = rv.as<SparseIterationRVNode>()) {
+        return self->Annotate(GetRef<SparseIterationRV>(sparse_iteration_rv), ann_key, ann_val);
       }
       LOG(FATAL) << "TypeError: Cannot evaluate the random variable of type: " << rv->GetTypeKey()
                  << ". Its value is: " << rv;
@@ -310,6 +333,17 @@ TVM_REGISTER_GLOBAL("tir.schedule.ScheduleEnterPostproc")
     .set_body_method<Schedule>(&ScheduleNode::EnterPostproc);
 TVM_REGISTER_GLOBAL("tir.schedule.ScheduleUnsafeHideBufferAccess")
     .set_body_method<Schedule>(&ScheduleNode::UnsafeHideBufferAccess);
+/******** (FFI) SparseTIR schedules ********/
+TVM_REGISTER_GLOBAL("tir.schedule.ScheduleGetSparseIteration")
+    .set_body_method<Schedule>(&ScheduleNode::GetSparseIteration);
+TVM_REGISTER_GLOBAL("tir.schedule.ScheduleGetSpIters")
+    .set_body_method<Schedule>(&ScheduleNode::GetSpIters);
+TVM_REGISTER_GLOBAL("tir.schedule.ScheduleSparseReorder")
+    .set_body_method<Schedule>(&ScheduleNode::SparseReorder);
+TVM_REGISTER_GLOBAL("tir.schedule.ScheduleSparseFuse")
+    .set_body_method<Schedule>(&ScheduleNode::SparseFuse);
+TVM_REGISTER_GLOBAL("tir.schedule.ScheduleHideBufAccess")
+    .set_body_method<Schedule>(&ScheduleNode::HideBufAccess);
 
 }  // namespace tir
 }  // namespace tvm

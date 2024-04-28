@@ -37,7 +37,11 @@ def csrmm(
 
 def bench_hyb(*args, **kwargs):
     mod = tvm.IRModule.from_expr(csrmm)
-    mod = tvm.sparse.lower_sparse_iter(mod)
+    sch = tvm.tir.Schedule(mod)
+    sp_iteration = sch.get_sparse_iteration("csrmm")
+    i, j, k1, k2, k3 = sch.get_sp_iters(sp_iteration)
+    sch.sparse_reorder(sp_iteration, [i, j, k2, k3, k1])
+    mod = tvm.sparse.lower_sparse_iter(sch.mod)
     mod = tvm.sparse.lower_sparse_buffer(mod)
     print(mod)
     f = tvm.build(mod, target="llvm")

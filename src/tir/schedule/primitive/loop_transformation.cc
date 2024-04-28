@@ -398,6 +398,7 @@ Array<StmtSRef> Split(ScheduleState self, const StmtSRef& loop_sref, const Array
   }
   // Currently, loops not starting with 0 are not supported
   arith::Analyzer analyzer;
+  analyzer.Bind(self->buf_dom_map);
   CheckLoopStartsWithZero(self, loop_sref, &analyzer);
 
   // Find the most common dtype
@@ -440,9 +441,11 @@ Array<StmtSRef> Split(ScheduleState self, const StmtSRef& loop_sref, const Array
   for (int i = n - 1; i >= 0; i--) {
     new_stmt = For(new_loop_vars[i], 0, factors[i], ForKind::kSerial, new_stmt);
   }
-  new_stmt = IterMapSimplifyBlockBinding::SimplifyBindings(std::move(new_stmt), GetLoops(loop_sref),
-                                                           opaque_block_reuse.CopyOnWrite(),
-                                                           preserve_unit_iters);
+  if (!IsHorizontalFuse(self, loop_sref)) {
+    new_stmt = IterMapSimplifyBlockBinding::SimplifyBindings(std::move(new_stmt), GetLoops(loop_sref),
+                                                            opaque_block_reuse.CopyOnWrite(),
+                                                            preserve_unit_iters);
+  }
   self->Replace(loop_sref, new_stmt, opaque_block_reuse);
   Array<StmtSRef> result_srefs;
   result_srefs.reserve(n);
@@ -872,6 +875,7 @@ StmtSRef Fuse(ScheduleState self, const Array<StmtSRef>& loop_srefs, bool preser
   StmtSRef outer_loop_sref{nullptr};
   const ForNode* outer_loop = nullptr;
   arith::Analyzer analyzer;
+  analyzer.Bind(self->buf_dom_map);
   std::unordered_set<const VarNode*> outer_loop_vars;
   // Step 1. check correctness
   for (const StmtSRef& sref : loop_srefs) {
@@ -1164,6 +1168,97 @@ StmtSRef AddUnitLoop(ScheduleState self, StmtSRef sref) {
   return self->stmt2ref.at(creator.new_loop_.get());
 }
 
+class LoopLifter : public StmtExprMutator {
+ public:
+  explicit LoopLifter(const BlockNode* parent_blk, const ForNode* loop)
+      : parent_blk_(parent_blk), loop_(loop) {
+    new_var_ = Var("v" + loop->loop_var->name_hint);
+    var_map_.Set(loop->loop_var, new_var_);
+    String thread_tag =
+        loop->thread_binding.defined() ? loop->thread_binding.value()->thread_tag : "";
+    // We only allow data parallel iter var now.
+    new_iter_var_ =
+        IterVar(Range::FromMinExtent(loop->min, loop->extent), new_var_, kDataPar, thread_tag);
+  }
+
+  Map<Block, Block> block_map_;
+
+ private:
+  Stmt VisitStmt_(const BlockRealizeNode* op) final {
+    auto n = CopyOnWrite(op);
+    if (op->block.get() == parent_blk_) {
+      n->iter_values.push_back(loop_->loop_var);
+    } else {
+      Array<PrimExpr> iter_values;
+      for (const PrimExpr& iter_value : op->iter_values) {
+        iter_values.push_back(Substitute(iter_value, var_map_));
+      }
+      n->iter_values = std::move(iter_values);
+      n->predicate = std::move(Substitute(op->predicate, var_map_));
+    }
+    n->block = Downcast<Block>(VisitStmt(op->block));
+    BlockRealize new_block_realize(n);
+    if (op->block.get() == parent_blk_) {
+      return For(loop_->loop_var, loop_->min, loop_->extent, loop_->kind, new_block_realize,
+                 loop_->thread_binding, loop_->annotations);
+    } else {
+      return new_block_realize;
+    }
+  }
+
+  Stmt VisitStmt_(const BlockNode* op) final {
+    auto n = CopyOnWrite(op);
+    n->body = VisitStmt(op->body);
+    if (op == parent_blk_) {
+      n->iter_vars.push_back(new_iter_var_);
+    }
+    Block new_block = Block(n);
+    block_map_.Set(GetRef<Block>(op), new_block);
+    return new_block;
+  }
+
+  Stmt VisitStmt_(const ForNode* op) final {
+    if (op == loop_) {
+      return VisitStmt(op->body);
+    } else {
+      return StmtExprMutator::VisitStmt_(op);
+    }
+  }
+
+  const BlockNode* parent_blk_;
+  const ForNode* loop_;
+  Var new_var_;
+  IterVar new_iter_var_;
+  Map<Var, PrimExpr> var_map_;
+};
+
+void LiftLoop(ScheduleState self, const StmtSRef& loop_sref) {
+  // Step 1. Check the validity.
+  const StmtSRefNode* p = loop_sref->parent;
+  const StmtSRefNode* top = nullptr;
+  const BlockNode* parent_block = nullptr;
+  const BlockNode* root_block = nullptr;
+  const ForNode* loop = TVM_SREF_TO_FOR(loop_sref);
+  for (; p != nullptr; p = p->parent) {
+    if (p->stmt->IsInstance<BlockNode>()) {
+      if (parent_block == nullptr) {
+        parent_block = TVM_SREF_TO_BLOCK(p);
+      } else {
+        root_block = TVM_SREF_TO_BLOCK(p);
+        top = p;
+      }
+    }
+  }
+  ICHECK(parent_block != nullptr) << "Cannot find parent block.";
+  ICHECK(root_block != nullptr) << "Root block was not defined.";
+  CHECK(parent_block != root_block) << "Loop already at top level block, cannot lift further.";
+  // TODO(zihao): further checks.
+  // Step 2. Perform the lifting.
+  LoopLifter loop_lifter(parent_block, loop);
+  Stmt new_subtree = loop_lifter(GetRef<Block>(root_block));
+  self->Replace(GetRef<StmtSRef>(top), new_subtree, loop_lifter.block_map_);
+}
+
 /******** InstructionKind Registration ********/
 
 struct SplitTraits : public UnpackedInstTraits<SplitTraits> {
@@ -1375,12 +1470,36 @@ struct AddUnitLoopTraits : public UnpackedInstTraits<AddUnitLoopTraits> {
   friend struct ::tvm::tir::UnpackedInstTraits;
 };
 
+struct LiftLoopTraits : public UnpackedInstTraits<LiftLoopTraits> {
+  static constexpr const char* kName = "LiftLoop";
+  static constexpr bool kIsPure = false;
+
+ private:
+  static constexpr size_t kNumInputs = 1;
+  static constexpr size_t kNumAttrs = 0;
+  static constexpr size_t kNumDecisions = 0;
+
+  static void UnpackedApplyToSchedule(Schedule sch, LoopRV loop_rv) {
+    return sch->LiftLoop(loop_rv);
+  }
+
+  static String UnpackedAsPython(Array<String> outputs, String loop_rv) {
+    PythonAPICall py("lift_loop");
+    py.Input("", loop_rv);
+    return py.Str();
+  }
+
+  template <typename>
+  friend struct ::tvm::tir::UnpackedInstTraits;
+};
+
 TVM_REGISTER_INST_KIND_TRAITS(SplitTraits);
 TVM_REGISTER_INST_KIND_TRAITS(LoopPartitionTraits);
 TVM_REGISTER_INST_KIND_TRAITS(MergeTraits);
 TVM_REGISTER_INST_KIND_TRAITS(FuseTraits);
 TVM_REGISTER_INST_KIND_TRAITS(ReorderTraits);
 TVM_REGISTER_INST_KIND_TRAITS(AddUnitLoopTraits);
+TVM_REGISTER_INST_KIND_TRAITS(LiftLoopTraits);
 
 }  // namespace tir
 }  // namespace tvm

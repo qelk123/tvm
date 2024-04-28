@@ -279,6 +279,19 @@ TVM_DLL void ReorderBlockIterVar(ScheduleState self, const StmtSRef& block_sref,
  * \return The new thread_binding loop
  */
 TVM_DLL StmtSRef AddUnitLoop(ScheduleState self, StmtSRef sref);
+/*!
+ * \brief Reorder itervars inside a block.
+ * \param self The state of the schedule.
+ * \param block_sref The sref of block to be transformed.
+ * \param new_order The new itervar order.
+ */
+TVM_DLL void ReorderBlockIterVar(ScheduleState self, const StmtSRef& block_sref,
+                                 const Array<Integer>& new_order);
+/*!
+ * \brief Lift a loop to its outer scope.
+ * TODO(zihao): docstring
+ */
+TVM_DLL void LiftLoop(ScheduleState self, const StmtSRef& loop_sref);
 
 /******** Schedule: Manipulate ForKind ********/
 /*!
@@ -382,7 +395,37 @@ TVM_DLL StmtSRef ReindexCacheRead(ScheduleState self, const StmtSRef& block_sref
 TVM_DLL StmtSRef ReindexCacheWrite(ScheduleState self, const StmtSRef& block_sref,
                                    int write_buffer_index, const String& storage_scope,
                                    const IndexMap& index_map);
+/*!
+ * \brief Create a block that reads a buffer region into a read cache. It requires:
+ * 1) There is at most one block who writes the buffer in the scope.
+ * 2) The scope block have stage-pipeline property.
+ * Compared to cache read, the index mapping was performed at producer instead of consumer.
+ * \param self The state of the schedule
+ * \param block_sref The consumer block of the target buffer.
+ * \param read_buffer_index The index of the buffer in block's read region.
+ * \param storage_scope The target storage scope.
+ * \param dim_order The user-defined dimension order of allocated buffer.
+ * \return The cache stage block.
+ */
+TVM_DLL StmtSRef ReverseCacheRead(ScheduleState self, const StmtSRef& block_sref,
+                                  int read_buffer_index, const String& storage_scope,
+                                  Array<Integer> dim_order);
 
+/*!
+ * \brief Create a block that writes a buffer region into a write cache. It requires:
+ * 1) There is only one block that writes the target buffer.
+ * 2) The scope block have stage-pipeline property.
+ * Compared to cache write, the index mapping was performed at producer instead of consumer.
+ * \param self The state of the schedule
+ * \param block_sref The producer of the buffer
+ * \param write_buffer_index The index of the buffer in block's write region
+ * \param storage_scope The target storage scope
+ * \param dim_order The user-defined dimension order of allocated buffer.
+ * \return The cache stage block.
+ */
+TVM_DLL StmtSRef ReverseCacheWrite(ScheduleState self, const StmtSRef& block_sref,
+                                   int write_buffer_index, const String& storage_scope,
+                                   Array<Integer> dim_order);
 /*!
  *!
  * \brief Create 2 blocks that read&write a buffer region into a read/write cache.
@@ -580,6 +623,14 @@ TVM_DLL void UnsafeSetDType(ScheduleState self, const StmtSRef& block_sref, int 
 TVM_DLL void SetAxisSeparator(ScheduleState self, const StmtSRef& block_sref, int buffer_index,
                               BufferIndexType buffer_index_type,
                               const Array<IntImm>& axis_separators);
+/*!
+ * \brief Change a matched buffer to allocated buffer, where the buffer is specified by a block
+ * and a write-index.
+ * \param self The state of the schedule
+ * \param block_sref The sref of the producer block of the buffer
+ * \param buffer_index The index of the buffer in block's write region
+ */
+TVM_DLL void MatchToAlloc(ScheduleState self, const StmtSRef& block_sref, int buffer_index);
 
 /******** Schedule: Blockize & Tensorize ********/
 
@@ -629,6 +680,27 @@ TVM_DLL void Annotate(ScheduleState self, const StmtSRef& sref, const String& an
  * \param ann_key The annotation key
  */
 TVM_DLL void Unannotate(ScheduleState self, const StmtSRef& sref, const String& ann_key);
+
+/*!
+ * \brief Annotate a sparse iteration with key value pair
+ * \param self The state of the schedule
+ * \param sp_iteration The sparse iteration to be annotated.
+ * \param ann_key The annotation key
+ * \param ann_val The annotation value
+ */
+TVM_DLL SparseIteration AnnotateSparseIteration(ScheduleState self,
+                                                const SparseIteration& sp_iteration,
+                                                const String& ann_key, const ObjectRef& ann_val);
+
+/*!
+ * \brief Unannotate a sparse iteration's annotation with key ann_key
+ * \param self The state of the schedule
+ * \param sp_iteration The sparse iteration to be unannotated.
+ * \param ann_key The annotation key
+ */
+TVM_DLL SparseIteration UnannotateSparseIteration(ScheduleState self,
+                                                  const SparseIteration& sp_iteration,
+                                                  const String& ann_key);
 
 /******** Schedule: Layout transformation ********/
 /*!
@@ -711,6 +783,52 @@ TVM_DLL void RollingBuffer(ScheduleState self, const StmtSRef& block_sref, int w
  */
 TVM_DLL void UnsafeHideBufferAccess(ScheduleState self, const StmtSRef& block_sref,
                                     const String& buf_type, const Array<IntImm>& buf_index_array);
+
+/******** Schedule: SparseTIR schedules ********/
+
+/*!
+ * \brief Retrieves sparse iteration in a specific function with its name
+ * \param self The schedule state
+ * \param name The name of the sparse iteration to be retrieved
+ * \param func_name The name of the function
+ * \return The sparse iteration with the specific name
+ */
+TVM_DLL SparseIteration GetSparseIteration(const ScheduleState& self, const String& name,
+                                           const String& func_name);
+
+/*!
+ * \brief Reorder a list of sparse iterators. It requires the new order to not break the iterator
+ * dependency.
+ * \param self The state of the schedule
+ * \param sp_iteration The sparse iteration to be transformed
+ * \param new_order The new order of the sparse iterators, whose length should equal to the number
+ * of the input block's sparse iterators
+ * \return The new sparse iteration, which is only used to update the corresponding random variable
+ * in concrete schedule.
+ */
+TVM_DLL SparseIteration SparseReorder(ScheduleState self, const SparseIteration& sp_iteration,
+                                      const Array<SpIterVar>& new_order);
+
+/*!
+ * \brief Fuse a list of sparse iterators in a sparse iteration.
+ * \param self The state of the schedule.
+ * \param sp_iteration The sparse iteration to be transformed.
+ * \param iters_to_fuse The sparse iterators to be fused.
+ * \return The new sparse iteration, which is only used to update the corresponding random variable
+ * in concrete schedule.
+ */
+TVM_DLL SparseIteration SparseFuse(ScheduleState self, const SparseIteration& sp_iteration,
+                                   const Array<SpIterVar>& iters_to_fuse);
+
+/*!
+ * \brief Hide some buffer access in the given block.
+ * \param self The state of the schedule.
+ * \param block_rv The sref of the block we hide access.
+ * \param buf_type The buffer type: read/write
+ * \param buf_index_array The array of buffer indices we hide access.
+ */
+TVM_DLL void HideBufAccess(ScheduleState self, const StmtSRef& block_sref, const String& buf_type,
+                           const Array<PrimExpr>& buf_index_array);
 
 }  // namespace tir
 }  // namespace tvm

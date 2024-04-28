@@ -23,6 +23,7 @@ from tvm.error import TVMError, register_error
 from tvm.ir import GlobalVar, IRModule, PrimExpr
 from tvm.runtime import Object, String
 from tvm.tir import Block, Buffer, FloatImm, For, IntImm, PrimFunc
+from tvm.tir.sparse import SpIterVar
 
 from ..function import IndexMap
 from . import _ffi_api
@@ -55,6 +56,17 @@ class BlockRV(Object):
         """Construct a new BlockRV."""
         self.__init_handle_by_constructor__(
             _ffi_api.BlockRV  # type: ignore # pylint: disable=no-member
+        )
+
+
+@_register_object("tir.SparseIterationRV")
+class SparseIterationRV(Object):
+    """A random variable that refers to a sparse iteration"""
+
+    def __init__(self) -> None:
+        """Construct a new SparseIterationRV."""
+        self.__init_handle_by_constructor__(
+            _ffi_api.SparseIterationRV  # type: ignore # pylint: disable=no-member
         )
 
 
@@ -3892,3 +3904,104 @@ class Schedule(Object):
             buf_type,
             buf_index_array,
         )
+    
+    ########## Schedule: SparseTIR schedules ##########
+
+    def get_sparse_iteration(
+        self,
+        name: str,
+        func_name: str = "main",
+    ) -> SparseIterationRV:
+        """Retrieve a sparse iteration in a specific function with its name
+
+        Parameters
+        ----------
+        name : str
+            The name of the sparse iteration
+        func_name : str = "main"
+            The name of the function
+
+        Returns
+        -------
+        block : SparseIterationRV
+            The sparse iteration retrieved
+            IndexError is raised if 0 or multiple iterations exist with the specific name.
+        """
+        return _ffi_api.ScheduleGetSparseIteration(  # type: ignore # pylint: disable=no-member
+            self,
+            name,
+            func_name,
+        )
+
+    def get_sp_iters(self, block: SparseIterationRV) -> List[SpIterVar]:
+        """Retrieve the sparse iterators of a given sparse iteration
+
+        Parameters
+        ----------
+        block : SparseIterationRV
+            The block to be queried
+
+        Returns
+        -------
+        sp_iters : List[SpIterVar]
+            The sparse iterators of the input sparse iteration
+        """
+        return _ffi_api.ScheduleGetSpIters(  # type: ignore # pylint: disable=no-member
+            self,
+            block,
+        )
+
+    def sparse_reorder(self, block: SparseIterationRV, new_order: List[SpIterVar]) -> None:
+        """Reorder a list of sparse iterators. It requires the new order to not break the iterator
+        dependency.
+
+        Parameters
+        ----------
+        block : SparseIterationRV
+            The queried sparse iteration
+
+        new_order : List[SpIterVar]
+            The The new order of the sparse iterators, whose length should equal to the number
+            of the input block's sparse iterators
+        """
+        _ffi_api.ScheduleSparseReorder(  # type: ignore # pylint: disable=no-member
+            self,
+            block,
+            new_order,
+        )
+
+    def sparse_fuse(self, block: SparseIterationRV, iters_to_fuse: List[SpIterVar]) -> None:
+        """Fuse a list of sparse iterators.
+
+        Parameters
+        ----------
+        block : SparseIterationRV
+            The sparse iteration where we perform fusion.
+        iters_to_fuse: List[SpIterVar]
+            The sparse iter vars to be fused.
+        """
+        _ffi_api.ScheduleSparseFuse(  # type: ignore # pylint: disable=no-member
+            self,
+            block,
+            iters_to_fuse,
+        )
+
+    def hide_buffer_access(self, block: BlockRV, buf_type: str, buf_index_array: List[int]) -> None:
+        """Hide some buffer access in a given block.
+
+        Parameters
+        ----------
+        block : BlockRV
+            The block where we hide read access.
+        buf_type : str
+            The buffer type: "read"/"write".
+        buf_index_array : List[int]
+            The array of buffer indices we hide access.
+        """
+        _ffi_api.ScheduleHideBufAccess(  # type: ignore # pylint: disable=no-member
+            self,
+            block,
+            buf_type,
+            buf_index_array,
+        )
+

@@ -75,6 +75,7 @@ class ConcreteScheduleNode : public ScheduleNode {
   inline Block Get(const BlockRV& block_rv) const final;
   inline For Get(const LoopRV& loop_rv) const final;
   inline PrimExpr Get(const ExprRV& expr_rv) const final;
+  inline SparseIteration Get(const SparseIterationRV& sp_iteration_rv) const final;
   inline StmtSRef GetSRef(const BlockRV& block_rv) const final;
   inline StmtSRef GetSRef(const LoopRV& loop_rv) const final;
   inline bool HasBlock(const BlockRV& block_rv) const final;
@@ -83,6 +84,9 @@ class ConcreteScheduleNode : public ScheduleNode {
   void RemoveRV(const BlockRV& block_rv) final { RemoveFromSymbolTable(block_rv); }
   void RemoveRV(const LoopRV& loop_rv) final { RemoveFromSymbolTable(loop_rv); }
   void RemoveRV(const ExprRV& expr_rv) final { RemoveFromSymbolTable(expr_rv); }
+  void RemoveRV(const SparseIterationRV& sp_iteration_rv) final {
+    RemoveFromSymbolTable(sp_iteration_rv);
+  }
   using ScheduleNode::GetSRef;
 
  public:
@@ -115,6 +119,7 @@ class ConcreteScheduleNode : public ScheduleNode {
   void ReorderBlockIterVar(const BlockRV& block_rv, const Array<Integer> new_order) override;
   LoopRV AddUnitLoop(const BlockRV& block_rv) override;
   LoopRV AddUnitLoop(const LoopRV& loop_rv) override;
+  void LiftLoop(const LoopRV& loop_rv) override;
   /******** Schedule: Manipulate ForKind ********/
   void Parallel(const LoopRV& loop_rv) override;
   void Vectorize(const LoopRV& loop_rv) override;
@@ -129,6 +134,10 @@ class ConcreteScheduleNode : public ScheduleNode {
                            const String& storage_scope, const IndexMap& index_map) override;
   BlockRV ReindexCacheWrite(const BlockRV& block_rv, int write_buffer_index,
                             const String& storage_scope, const IndexMap& index_map) override;
+  BlockRV ReverseCacheRead(const BlockRV& block_rv, int read_buffer_index,
+                           const String& storage_scope, Array<Integer> dim_order) override;
+  BlockRV ReverseCacheWrite(const BlockRV& block_rv, int write_buffer_index,
+                            const String& storage_scope, Array<Integer> dim_order) override;
   Array<BlockRV> CacheInplace(const BlockRV& block_rv, int read_buffer_index,
                               const String& storage_scope) override;
   Array<BlockRV> CacheIndex(const BlockRV& block_rv, const String& storage_scope,
@@ -156,6 +165,7 @@ class ConcreteScheduleNode : public ScheduleNode {
                     int offset) override;
   void SetScope(const BlockRV& block_rv, int buffer_index, const String& storage_scope) override;
   void UnsafeSetDType(const BlockRV& block_rv, int buffer_index, const String& dtype) override;
+  void MatchToAlloc(const BlockRV& block_rv, int buffer_index) override;
   /******** Schedule: Blockize & Tensorize ********/
   BlockRV Blockize(const LoopRV& loop_rv, bool preserve_unit_iters) override;
   BlockRV Blockize(const Array<BlockRV>& blocks, bool preserve_unit_iters) override;
@@ -166,6 +176,9 @@ class ConcreteScheduleNode : public ScheduleNode {
   void Unannotate(const LoopRV& loop_rv, const String& ann_key) override;
   void Annotate(const BlockRV& block_rv, const String& ann_key, const ObjectRef& ann_val) override;
   void Unannotate(const BlockRV& block_rv, const String& ann_key) override;
+  void Annotate(const SparseIterationRV& sp_iteration_rv, const String& ann_key,
+                const ObjectRef& ann_val) override;
+  void Unannotate(const SparseIterationRV& sp_iteration_rv, const String& ann_key) override;
   /******** Schedule: Layout transformation ********/
   void TransformLayout(const BlockRV& block_rv, int buffer_index, BufferIndexType buffer_index_type,
                        const IndexMap& index_map, const Optional<IndexMap>& pad_value,
@@ -182,6 +195,16 @@ class ConcreteScheduleNode : public ScheduleNode {
   void EnterPostproc() override {}
   void UnsafeHideBufferAccess(const BlockRV& block_rv, const String& buf_type,
                               const Array<IntImm>& buf_index_array) override;
+  /******** Schedule: SparseTIR schedules ********/
+  SparseIterationRV GetSparseIteration(const String& name,
+                                       const String& func_name = "main") override;
+  Array<SpIterVar> GetSpIters(const SparseIterationRV& sp_iteration_rv) override;
+  void SparseReorder(const SparseIterationRV& sp_iteration_rv,
+                     const Array<SpIterVar>& new_order) override;
+  void SparseFuse(const SparseIterationRV& sp_iteration_rv,
+                  const Array<SpIterVar>& iters_to_fuse) override;
+  void HideBufAccess(const BlockRV& block_rv, const String& buf_type,
+                     const Array<PrimExpr>& buf_index_array) override;
 
  protected:
   /******** Utility functions ********/
@@ -219,6 +242,18 @@ class ConcreteScheduleNode : public ScheduleNode {
    * \return The new random variables created
    */
   inline Array<ExprRV> CreateRV(const std::vector<int64_t>& value);
+  /*!
+   * \brief Add a sparse iteration as a random variable into the symbol table
+   * \param sp_iteration
+   * \return SparseIterationRV
+   */
+  inline SparseIterationRV CreateRV(const SparseIteration& sp_iteration);
+  /*!
+   * \brief Update the value of the input SparseIterationRV to the input block.
+   * \param sp_iteration_rv The random variable to be updated
+   * \param block The new value of the random variable
+   */
+  inline void UpdateRV(const SparseIterationRV& sp_iteration_rv, const SparseIteration& block);
   /*! \brief Remove a random variable from the symbol table */
   inline void RemoveFromSymbolTable(const ObjectRef& rv);
   /*!
@@ -257,6 +292,13 @@ inline PrimExpr ConcreteScheduleNode::Get(const ExprRV& expr_rv) const {
     return Integer(int_imm->value);
   });
   return this->analyzer_->Simplify(transformed);
+}
+
+inline SparseIteration ConcreteScheduleNode::Get(const SparseIterationRV& sp_iteration_rv) const {
+  auto it = this->symbol_table_.find(sp_iteration_rv);
+  CHECK(it != this->symbol_table_.end())
+      << "IndexError: Cannot find corresponding SparseIterationRV: " << sp_iteration_rv;
+  return Downcast<SparseIteration>((*it).second);
 }
 
 inline bool ConcreteScheduleNode::HasBlock(const BlockRV& block_rv) const {
@@ -366,6 +408,17 @@ inline Array<ExprRV> ConcreteScheduleNode::CreateRV(const std::vector<int64_t>& 
     results.push_back(CreateRV(v));
   }
   return results;
+}
+
+inline SparseIterationRV ConcreteScheduleNode::CreateRV(const SparseIteration& block) {
+  SparseIterationRV rv;
+  this->symbol_table_.Set(rv, block);
+  return rv;
+}
+
+inline void ConcreteScheduleNode::UpdateRV(const SparseIterationRV& rv,
+                                           const SparseIteration& block) {
+  this->symbol_table_.Set(rv, block);
 }
 
 inline void ConcreteScheduleNode::RemoveFromSymbolTable(const ObjectRef& obj) {

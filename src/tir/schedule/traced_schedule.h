@@ -72,6 +72,7 @@ class TracedScheduleNode : public ConcreteScheduleNode {
                               bool preserve_unit_iters) final;
   void Reorder(const Array<LoopRV>& ordered_loop_rvs) final;
   void ReorderBlockIterVar(const BlockRV& block_rv, const Array<Integer> new_order) final;
+  void LiftLoop(const LoopRV& loop_rv) final;
   LoopRV AddUnitLoop(const BlockRV& block_rv) final;
   LoopRV AddUnitLoop(const LoopRV& loop_rv) final;
   /******** Schedule: Manipulate ForKind ********/
@@ -84,6 +85,10 @@ class TracedScheduleNode : public ConcreteScheduleNode {
                     const Array<BlockRV> consumer_blocks = {}) final;
   BlockRV CacheWrite(const BlockRV& block_rv, int write_buffer_index, const String& storage_scope,
                      const Array<BlockRV> consumer_blocks = {}) final;
+  BlockRV ReverseCacheRead(const BlockRV& block_rv, int read_buffer_index,
+                           const String& storage_scope, Array<Integer> dim_order) final;
+  BlockRV ReverseCacheWrite(const BlockRV& block_rv, int write_buffer_index,
+                            const String& storage_scope, Array<Integer> dim_order) final;
   BlockRV ReindexCacheRead(const BlockRV& block_rv, int read_buffer_index,
                            const String& storage_scope, const IndexMap& index_map) final;
   BlockRV ReindexCacheWrite(const BlockRV& block_rv, int write_buffer_index,
@@ -114,6 +119,7 @@ class TracedScheduleNode : public ConcreteScheduleNode {
                     int offset) final;
   void SetScope(const BlockRV& block_rv, int buffer_index, const String& storage_scope) final;
   void UnsafeSetDType(const BlockRV& block_rv, int buffer_index, const String& dtype) final;
+  void MatchToAlloc(const BlockRV& block_rv, int buffer_index) final;
   /******** Schedule: Blockize & Tensorize ********/
   BlockRV Blockize(const LoopRV& loop_rv, bool preserve_unit_iters) final;
   BlockRV Blockize(const Array<BlockRV>& blocks, bool preserve_unit_iters) final;
@@ -124,6 +130,9 @@ class TracedScheduleNode : public ConcreteScheduleNode {
   void Unannotate(const LoopRV& loop_rv, const String& ann_key) override;
   void Annotate(const BlockRV& block_rv, const String& ann_key, const ObjectRef& ann_val) override;
   void Unannotate(const BlockRV& block_rv, const String& ann_key) override;
+  void Annotate(const SparseIterationRV& sp_iteration_rv, const String& ann_key,
+                const ObjectRef& ann_val) override;
+  void Unannotate(const SparseIterationRV& sp_iteration_rv, const String& ann_key) override;
   /******** Schedule: Layout transformation ********/
   void TransformLayout(const BlockRV& block_rv, int buffer_index, BufferIndexType buffer_index_type,
                        const IndexMap& index_map, const Optional<IndexMap>& pad_value,
@@ -141,6 +150,15 @@ class TracedScheduleNode : public ConcreteScheduleNode {
   void EnterPostproc() final;
   void UnsafeHideBufferAccess(const BlockRV& block_rv, const String& buf_type,
                               const Array<IntImm>& buf_index_array) final;
+  /******** Schedule: SparseTIR schedules ********/
+  SparseIterationRV GetSparseIteration(const String& name, const String& func_name = "main") final;
+  Array<SpIterVar> GetSpIters(const SparseIterationRV& sp_iteration_rv) final;
+  void SparseReorder(const SparseIterationRV& sp_iteration_rv,
+                     const Array<SpIterVar>& new_order) final;
+  void SparseFuse(const SparseIterationRV& sp_iteration_rv,
+                  const Array<SpIterVar>& iters_to_fuse) final;
+  void HideBufAccess(const BlockRV& block_rv, const String& buf_type,
+                     const Array<PrimExpr>& buf_index_array) final;
 };
 
 }  // namespace tir

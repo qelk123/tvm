@@ -598,6 +598,14 @@ void ConcreteScheduleNode::ReorderBlockIterVar(const BlockRV& block_rv,
   this->state_->DebugVerify();
 }
 
+void ConcreteScheduleNode::LiftLoop(const LoopRV& loop_rv) {
+  TVM_TIR_SCHEDULE_BEGIN();
+  StmtSRef loop_sref = this->GetSRef(loop_rv);
+  tir::LiftLoop(state_, loop_sref);
+  TVM_TIR_SCHEDULE_END("lift_loop", this->error_render_level_);
+  this->state_->DebugVerify();
+}
+
 LoopRV ConcreteScheduleNode::AddUnitLoop(const BlockRV& block_rv) {
   LoopRV result{nullptr};
   TVM_TIR_SCHEDULE_BEGIN();
@@ -771,6 +779,30 @@ BlockRV ConcreteScheduleNode::WriteAt(const LoopRV& loop_rv, const BlockRV& bloc
   return CreateRV<BlockRV>(result);
 }
 
+BlockRV ConcreteScheduleNode::ReverseCacheRead(const BlockRV& block_rv, int read_buffer_index,
+                                               const String& storage_scope,
+                                               Array<Integer> dim_order) {
+  StmtSRef result{nullptr};
+  TVM_TIR_SCHEDULE_BEGIN();
+  result = tir::ReverseCacheRead(state_, this->GetSRef(block_rv), read_buffer_index, storage_scope,
+                                 dim_order);
+  TVM_TIR_SCHEDULE_END("reverse-cache-read", this->error_render_level_);
+  this->state_->DebugVerify();
+  return CreateRV<BlockRV>(result);
+}
+
+BlockRV ConcreteScheduleNode::ReverseCacheWrite(const BlockRV& block_rv, int write_buffer_index,
+                                                const String& storage_scope,
+                                                Array<Integer> dim_order) {
+  StmtSRef result{nullptr};
+  TVM_TIR_SCHEDULE_BEGIN();
+  result = tir::ReverseCacheWrite(state_, this->GetSRef(block_rv), write_buffer_index,
+                                  storage_scope, dim_order);
+  TVM_TIR_SCHEDULE_END("reverse-cache-write", this->error_render_level_);
+  this->state_->DebugVerify();
+  return CreateRV<BlockRV>(result);
+}
+
 /******** Schedule: Compute location ********/
 
 void ConcreteScheduleNode::ComputeAt(const BlockRV& block_rv, const LoopRV& loop_rv,
@@ -848,6 +880,13 @@ void ConcreteScheduleNode::UnsafeSetDType(const BlockRV& block_rv, int buffer_in
   TVM_TIR_SCHEDULE_BEGIN();
   tir::UnsafeSetDType(state_, this->GetSRef(block_rv), buffer_index, dtype);
   TVM_TIR_SCHEDULE_END("set-dtype", this->error_render_level_);
+  this->state_->DebugVerify();
+}
+
+void ConcreteScheduleNode::MatchToAlloc(const BlockRV& block_rv, int buffer_index) {
+  TVM_TIR_SCHEDULE_BEGIN();
+  tir::MatchToAlloc(state_, this->GetSRef(block_rv), buffer_index);
+  TVM_TIR_SCHEDULE_END("match-to-alloc", this->error_render_level_);
   this->state_->DebugVerify();
 }
 
@@ -979,6 +1018,24 @@ void ConcreteScheduleNode::Unannotate(const BlockRV& block_rv, const String& ann
   TVM_TIR_SCHEDULE_END("unannotate", this->error_render_level_);
 }
 
+void ConcreteScheduleNode::Annotate(const SparseIterationRV& sp_iteration_rv, const String& ann_key,
+                                    const ObjectRef& ann_val) {
+  SparseIteration old_sp_iteration = this->Get(sp_iteration_rv), new_sp_iteration;
+  TVM_TIR_SCHEDULE_BEGIN();
+  new_sp_iteration = tir::AnnotateSparseIteration(state_, old_sp_iteration, ann_key, ann_val);
+  TVM_TIR_SCHEDULE_END("annotate", this->error_render_level_);
+  this->UpdateRV(sp_iteration_rv, new_sp_iteration);
+}
+
+void ConcreteScheduleNode::Unannotate(const SparseIterationRV& sp_iteration_rv,
+                                      const String& ann_key) {
+  SparseIteration old_sp_iteration = this->Get(sp_iteration_rv), new_sp_iteration;
+  TVM_TIR_SCHEDULE_BEGIN();
+  new_sp_iteration = tir::UnannotateSparseIteration(state_, old_sp_iteration, ann_key);
+  TVM_TIR_SCHEDULE_END("unannotate", this->error_render_level_);
+  this->UpdateRV(sp_iteration_rv, new_sp_iteration);
+}
+
 /******** Schedule: Layout transformation ********/
 void ConcreteScheduleNode::TransformLayout(const BlockRV& block_rv, int buffer_index,
                                            BufferIndexType buffer_index_type,
@@ -1049,6 +1106,52 @@ void ConcreteScheduleNode::UnsafeHideBufferAccess(const BlockRV& block_rv, const
   tir::UnsafeHideBufferAccess(state_, this->GetSRef(block_rv), buf_type, buf_index_array);
   TVM_TIR_SCHEDULE_END("hide-buffer-access", this->error_render_level_);
   this->state_->DebugVerify();
+}
+
+/******** Schedule: SparseTIR schedules ********/
+
+SparseIterationRV ConcreteScheduleNode::GetSparseIteration(const String& name,
+                                                           const String& func_name) {
+  BaseFunc func = this->state_->mod->Lookup(func_name);
+  const auto* prim_func = TVM_TYPE_AS(func, PrimFuncNode);
+  SparseIteration sp_iteration;
+  TVM_TIR_SCHEDULE_BEGIN();
+  sp_iteration = tir::GetSparseIteration(state_, name, func_name);
+  TVM_TIR_SCHEDULE_END("get-sparse-iteration", this->error_render_level_);
+
+  return CreateRV(sp_iteration);
+}
+
+Array<SpIterVar> ConcreteScheduleNode::GetSpIters(const SparseIterationRV& sp_iteration_rv) {
+  return this->Get(sp_iteration_rv)->sp_iter_vars;
+}
+
+void ConcreteScheduleNode::SparseReorder(const SparseIterationRV& sp_iteration_rv,
+                                         const Array<SpIterVar>& new_order) {
+  SparseIteration old_block = this->Get(sp_iteration_rv);
+  SparseIteration new_block{nullptr};
+  TVM_TIR_SCHEDULE_BEGIN();
+  new_block = tir::SparseReorder(state_, old_block, new_order);
+  TVM_TIR_SCHEDULE_END("sparse-reorder", this->error_render_level_);
+  this->UpdateRV(sp_iteration_rv, new_block);
+}
+
+void ConcreteScheduleNode::SparseFuse(const SparseIterationRV& sp_iteration_rv,
+                                      const Array<SpIterVar>& iters_to_fuse) {
+  SparseIteration old_block = this->Get(sp_iteration_rv);
+  SparseIteration new_block{nullptr};
+  TVM_TIR_SCHEDULE_BEGIN();
+  new_block = tir::SparseFuse(state_, old_block, iters_to_fuse);
+  TVM_TIR_SCHEDULE_END("sparse-fuse", this->error_render_level_);
+  this->UpdateRV(sp_iteration_rv, new_block);
+}
+
+void ConcreteScheduleNode::HideBufAccess(const BlockRV& block_rv, const String& buf_type,
+                                         const Array<PrimExpr>& buf_index_array) {
+  TVM_TIR_SCHEDULE_BEGIN();
+  tir::HideBufAccess(state_, this->GetSRef(block_rv), buf_type, buf_index_array);
+  this->state_->DebugVerify();
+  TVM_TIR_SCHEDULE_END("hide-buf-access", this->error_render_level_);
 }
 
 }  // namespace tir

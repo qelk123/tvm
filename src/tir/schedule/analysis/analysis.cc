@@ -46,6 +46,43 @@ const PrimFuncNode* GetRootPrimFunc(const IRModule& mod, const StmtNode* root_bl
   throw;
 }
 
+const PrimFuncNode* GetPrimFuncFromSparseIteration(const IRModule& mod,
+                                                   const SparseIterationNode* sp_iteration,
+                                                   GlobalVar* result_g_var) {
+  class Finder : public StmtVisitor {
+   public:
+    explicit Finder(const SparseIterationNode* sp_iteration)
+        : found_(false), sp_iteration_(sp_iteration) {}
+    void VisitStmt_(const SparseIterationNode* op) override {
+      if (op == sp_iteration_) {
+        found_ = true;
+      }
+      StmtVisitor::VisitStmt_(op);
+    }
+
+    bool found_;
+    const SparseIterationNode* sp_iteration_;
+  };
+  for (const auto& kv : mod->functions) {
+    const GlobalVar& g_var = kv.first;
+    const BaseFunc& base_func = kv.second;
+    if (const auto* func = base_func.as<PrimFuncNode>()) {
+      Finder finder(sp_iteration);
+      finder(func->body);
+      if (finder.found_) {
+        if (result_g_var != nullptr) {
+          *result_g_var = g_var;
+        }
+        return func;
+      }
+    }
+  }
+  LOG(FATAL) << "IndexError: Could not get the corresponding function in the schedule state of the "
+                "sparse iteration:\n"
+             << GetRef<SparseIteration>(sp_iteration);
+  throw;
+}
+
 /******** Scope ********/
 
 StmtSRef GetScopeRoot(const ScheduleState& self, const StmtSRef& sref,
@@ -217,7 +254,9 @@ int CheckCompleteBlockErrorCode(const ScheduleState& self, const StmtSRef& block
   // Cond 2. Dominant: the block is the only writer of its output,
   // dominating the reader of its output buffers
   if (!IsDominantBlock(self, scope_root_sref, block_sref)) {
-    return 2;
+    if (!IsComposable(self, block_sref)) {
+      return 2;
+    }
   }
   // Cond 3. No overlap between the buffers the block reads and writes
   std::unordered_set<const BufferNode*> written_buffers;
@@ -317,7 +356,9 @@ int CheckReductionBlockErrorCode(const ScheduleState& self, const StmtSRef& bloc
   // Cond 4. Dominant: the block is the only writer of its output, dominating the reader of its
   // output buffers.
   if (!IsDominantBlock(self, scope_root_sref, block_sref)) {
-    return 4;
+    if (!IsComposable(self, block_sref)) {
+      return 4;
+    }
   }
   // Cond 5. The reduction block vars are not used to index the output buffers.
   return ReductionIterNotIndexOutputBuffer(GetRef<Block>(block)) ? 0 : 5;

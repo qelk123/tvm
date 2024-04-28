@@ -23,6 +23,7 @@
 #include <tvm/tir/index_map.h>
 #include <tvm/tir/schedule/state.h>
 #include <tvm/tir/schedule/trace.h>
+#include <tvm/tir/sparse.h>
 
 namespace tvm {
 namespace tir {
@@ -93,6 +94,28 @@ class LoopRV : public runtime::ObjectRef {
 using ExprRV = PrimExpr;
 
 using ExprRVNode = PrimExprNode;
+
+/**************** Random variable: SparseIterationRV ****************/
+
+/*! \brief A random variable that evaluates to a TensorIR sparse iteration */
+class SparseIterationRVNode : public runtime::Object {
+ public:
+  void VisitAttrs(tvm::AttrVisitor* v) {}
+  static constexpr const char* _type_key = "tir.SparseIterationRV";
+  TVM_DECLARE_FINAL_OBJECT_INFO(SparseIterationRVNode, runtime::Object);
+};
+
+/*!
+ * \brief Managed reference to SparseIterationRVNode
+ * \sa SparseIterationRVNode
+ */
+class SparseIterationRV : public runtime::ObjectRef {
+ public:
+  /*! \brief Constructor */
+  TVM_DLL SparseIterationRV();
+  TVM_DEFINE_NOTNULLABLE_OBJECT_REF_METHODS(SparseIterationRV, runtime::ObjectRef,
+                                            SparseIterationRVNode);
+};
 
 /**************** The Schedule class ****************/
 
@@ -170,6 +193,12 @@ class ScheduleNode : public runtime::Object {
    */
   virtual PrimExpr Get(const ExprRV& expr_rv) const = 0;
   /*!
+   * \brief Get the sparse iteration corresponding to the specific random variable
+   * \param sp_iteration_rv The random variable to be looked up
+   * \return SparseIteration The corresponding sparse iteration
+   */
+  virtual SparseIteration Get(const SparseIterationRV& sp_iteration_rv) const = 0;
+  /*!
    * \brief Get the block sref corresponding to the specific BlockRV
    * \param block_rv The BlockRV to be looked up
    * \return The corresponding block sref
@@ -214,6 +243,11 @@ class ScheduleNode : public runtime::Object {
    * \param expr_rv The random variable to be removed
    */
   virtual void RemoveRV(const ExprRV& expr_rv) = 0;
+  /*!
+   * \brief Remove an sparse iteration random variable from the symbol table
+   * \param sp_iteration_rv The random variable to be removed
+   */
+  virtual void RemoveRV(const SparseIterationRV& sp_iteration_rv) = 0;
 
  public:
   /******** Schedule: Sampling ********/
@@ -385,6 +419,11 @@ class ScheduleNode : public runtime::Object {
    */
   virtual void ReorderBlockIterVar(const BlockRV& block_rv, const Array<Integer> new_order) = 0;
   /*!
+   * \brief Lift a loop to its outer block.
+   * \note TODO(zihao): write something about requirements.
+   */
+  virtual void LiftLoop(const LoopRV& loop_rv) = 0;
+  /*!
    * \brief Create a new unit loop on top of the specific block.
    * \param block_rv The block above which the new loop is created
    * \return The new loop created
@@ -489,6 +528,32 @@ class ScheduleNode : public runtime::Object {
    */
   virtual BlockRV ReindexCacheWrite(const BlockRV& block_rv, int write_buffer_index,
                                     const String& storage_scope, const IndexMap& index_map) = 0;
+  /*!
+   * \brief Create a block that reads a buffer region into a read cache. It requires:
+   * 1) There is at most one block who writes the buffer in the scope.
+   * 2) The scope block have stage-pipeline property.
+   * Compared to cache read, the index mapping was performed at producer rather than consumer.
+   * \param block_rv The consumer block of the target buffer.
+   * \param read_buffer_index The index of the buffer in block's read region.
+   * \param storage_scope The target storage scope.
+   * \param dim_order The user-defined dimension order of allocated buffer.
+   * \return The cache stage block.
+   */
+  virtual BlockRV ReverseCacheRead(const BlockRV& block_rv, int read_buffer_index,
+                                   const String& storage_scope, Array<Integer> dim_order) = 0;
+  /*!
+   * \brief Create a block that writes a buffer region into a write cache. It requires:
+   * 1) There is only one block who writes the target buffer.
+   * 2) The scope block have stage-pipeline property.
+   * Compared to cache write, the index mapping was performed at consumer rather than producer.
+   * \param block_rv The producer of the buffer
+   * \param write_buffer_index The index of the buffer in block's write region
+   * \param storage_scope The target storage scope
+   * \param dim_order The user-defined dimension order of allocated buffer.
+   * \return The cache stage block.
+   */
+  virtual BlockRV ReverseCacheWrite(const BlockRV& block_rv, int write_buffer_index,
+                                    const String& storage_scope, Array<Integer> dim_order) = 0;
   /*!
    * \brief Create 2 blocks that read&write a buffer region into a read/write cache.
    * It requires the target block both read & write the target buffer.
@@ -662,6 +727,14 @@ class ScheduleNode : public runtime::Object {
    * \param dtype The data type to be set
    */
   virtual void UnsafeSetDType(const BlockRV& block_rv, int buffer_index, const String& dtype) = 0;
+  /*!
+   * \brief Change a matched buffer to allocated buffer, where the buffer is specified by a block
+   * and a write-index.
+   * \param block_rv The producer block of the buffer.
+   * \param buffer_index The index of the buffer in the block's write region
+   */
+  virtual void MatchToAlloc(const BlockRV& block_rv, int buffer_index) = 0;
+
   /******** Schedule: Blockize & Tensorize ********/
   /*!
    * \brief Convert the subtree rooted at a specific loop into a block.
@@ -711,6 +784,15 @@ class ScheduleNode : public runtime::Object {
   virtual void Annotate(const BlockRV& block_rv, const String& ann_key,
                         const ObjectRef& ann_val) = 0;
   /*!
+   * \brief Annotate a sparse iteration with a key value pair
+   * \param sp_iteration_rv The sparse iteration to be annotated
+   * \param ann_key The annotation key
+   * \param ann_val The annotation value, a string or a ExprRV
+   */
+  virtual void Annotate(const SparseIterationRV& sp_iteration_rv, const String& ann_key,
+                        const ObjectRef& ann_val) = 0;
+
+  /*!
    * \brief Unannotate a loop's annotation with key ann_key
    * \param loop_rv The loop to be unannotated
    * \param ann_key The annotation key
@@ -722,6 +804,12 @@ class ScheduleNode : public runtime::Object {
    * \param ann_key The annotation key
    */
   virtual void Unannotate(const BlockRV& block_rv, const String& ann_key) = 0;
+  /*!
+   * \brief Unannotate a sparse iteration's annotation with key ann_key
+   * \param sp_iteration_rv The sparse iteration to be unannotated
+   * \param ann_key The annotation key
+   */
+  virtual void Unannotate(const SparseIterationRV& sp_iteration_rv, const String& ann_key) = 0;
 
   /******** Schedule: Layout transformation ********/
   /*!
@@ -840,6 +928,49 @@ class ScheduleNode : public runtime::Object {
    */
   virtual void UnsafeHideBufferAccess(const BlockRV& block_rv, const String& buf_type,
                                       const Array<IntImm>& buf_index_array) = 0;
+
+  /******** Schedule: SparseTIR schedules ********/
+  /*!
+   * \brief Retrieve a sparse iteration in a specific function with its name
+   * \param name The name of the sparse iteration to be retrieved
+   * \param func_name The name of the function
+   * \return The sparse iteration retrieved
+   * \note Indexing error is raised if 0 or multiple blocks exist with the specific name
+   */
+  virtual SparseIterationRV GetSparseIteration(const String& name,
+                                               const String& func_name = "main") = 0;
+  /*!
+   * \brief Retrieve the sparse iterators of a given sparse iteration
+   * \param sp_iteration_rv The sparse iteration to be queried
+   * \return The sparse iterators of the input sparse iteration
+   */
+  virtual Array<SpIterVar> GetSpIters(const SparseIterationRV& sp_iteration_rv) = 0;
+  /*!
+   * \brief Reorder a list of sparse iterators. It requires the new order to not break the iterator
+   * dependency.
+   * \param sp_iteration_rv The sparse iteration to be transformed
+   * \param new_order The new order of the sparse iterators, whose length should equal to the number
+   * of the input block's sparse iterators
+   */
+  virtual void SparseReorder(const SparseIterationRV& sp_iteration_rv,
+                             const Array<SpIterVar>& new_order) = 0;
+
+  /*!
+   * \brief Fuse a list of sparse iterators.
+   * \param sp_iteration_rv The sparse iteration to be transformed.
+   * \param iters_to_fuse The sparse iterators to be fused.
+   */
+  virtual void SparseFuse(const SparseIterationRV& sp_iteration_rv,
+                          const Array<SpIterVar>& iters_to_fuse) = 0;
+
+  /*!
+   * \brief Hide some buffer access in the given block.
+   * \param block_rv The block where we hide buffer access.
+   * \param buf_type The buffer type: read/write
+   * \param buf_index_array The array of buffer indices we hide access.
+   */
+  virtual void HideBufAccess(const BlockRV& block, const String& buf_type,
+                             const Array<PrimExpr>& buf_index_array) = 0;
 };
 
 /*!
