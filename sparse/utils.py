@@ -68,3 +68,26 @@ def ell(
     J = T.sparse_fixed(I, (n, nnz_cols), indices_j)
     A = T.match_sparse_buffer(a, (O, I, J), "float32")
     T.evaluate(0)
+
+@T.prim_func
+def ell2(
+    a: T.handle,
+    indptr_i: T.handle,
+    indices_i: T.handle,
+    indices_j: T.handle,
+    m: T.int32,
+    n: T.int32,
+    num_rows: T.int32,
+    nnz_cols: T.int32,
+) -> None:
+    O = T.dense_fixed(1)
+    I = T.sparse_variable(O, (m, num_rows), (indptr_i, indices_i))
+    J = T.sparse_fixed(I, (n, nnz_cols), indices_j)
+    A = T.match_sparse_buffer(a, (O, I, J), "float32")
+    T.evaluate(0)
+
+def csr2ell_inv_index_map(o, i, j):
+    return i, j
+
+def csr2ell_index_map(i, j):
+    return 0, i, j
