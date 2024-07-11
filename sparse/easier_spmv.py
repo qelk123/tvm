@@ -2,11 +2,11 @@ import tvm
 import tvm.testing
 from tvm.script import tir as T
 import tvm.sparse
-from utils import ell, ell2, csr2ell_index_map, csr2ell_inv_index_map
+from utils import csr2ell_index_map, csr2ell_inv_index_map
 import numpy as np
 
 @T.prim_func
-def easier_kernel(
+def naive_kernel(
     a: T.handle,
     b: T.handle,
     c: T.handle,
@@ -27,6 +27,30 @@ def easier_kernel(
         with T.init():
             C[i] = 0.0
         C[i] = C[i] + A[i, k] * B[k]
+
+@T.prim_func
+def ell2(
+    a: T.handle,
+    indptr_i: T.handle,
+    indices_i: T.handle,
+    indices_j: T.handle,
+    m: T.int32,
+    n: T.int32,
+    num_rows: T.int32,
+    nnz_cols: T.int32,
+) -> None:
+    O = T.dense_fixed(1)
+    I = T.sparse_variable(O, (m, num_rows), (indptr_i, indices_i))
+    J = T.sparse_fixed(I, (n, nnz_cols), indices_j)
+    A = T.match_sparse_buffer(a, (O, I, J), "float32")
+    T.evaluate(0)
+
+
+
+
+
+
+
 
 
 def test_easier_reduce(*args, **kwargs):
@@ -49,12 +73,12 @@ def test_easier_reduce(*args, **kwargs):
   
   
   
-    mod = tvm.IRModule.from_expr(easier_kernel)
+    mod = tvm.IRModule.from_expr(naive_kernel)
     mod = tvm.sparse.format_decompose(mod, rewrites)
     mod = tvm.tir.transform.RemovePreprocess()(mod)
-    
     mod = tvm.sparse.lower_sparse_iter(mod)
-    print(mod)
+    
+    # print(mod)
     mod = tvm.sparse.lower_sparse_buffer(mod)
     mod = tvm.tir.transform.RemoveUnusedArgs()(mod)
     sch = tvm.tir.Schedule(mod)
@@ -63,8 +87,8 @@ def test_easier_reduce(*args, **kwargs):
     row_o, _, row_i = sch.split(row_iter, [1, None, 128])
     sch.bind(row_o,"blockIdx.x")
     sch.bind(row_i,"threadIdx.x")
-    print("before:", sch.mod)
-    print("after:", sch.mod)
+    # print("before:", sch.mod)
+    # print("after:", sch.mod)
     store = sch.cache_write(block_b, 0, "local")
     sch.reverse_compute_at(store, row_i)
     sch.annotate(store, "atomic", True)
@@ -72,7 +96,7 @@ def test_easier_reduce(*args, **kwargs):
     print(sch.mod)
 
     f = tvm.build(sch.mod, target="cuda")
-    print(f.imported_modules[0].get_source("cu"))
+    # print(f.imported_modules[0].get_source("cu"))
 
     # prepare input
     m = 128
@@ -84,9 +108,9 @@ def test_easier_reduce(*args, **kwargs):
     indptr_i_nd = tvm.nd.array(np.array([0, non_zero_m], dtype="int32"), tvm.cuda())
     indices_i_nd = tvm.nd.array(np.random.randint(0, m, non_zero_m).astype("int32"), tvm.cuda())
     indices_j_nd = tvm.nd.array(np.random.randint(0, n, non_zero_m * 4).astype("int32"), tvm.cuda())
-    print(output_y_nd.asnumpy())
+    # print(output_y_nd.asnumpy())
     f(input_x_nd, output_y_nd, m, n, input_A_nd, indptr_i_nd, indices_i_nd, indices_j_nd, non_zero_m, non_zero_m)
-    print(output_y_nd.asnumpy())
+    # print(output_y_nd.asnumpy())
     output_ref = np.zeros((m)).astype("float32")
     indices_i_np = indices_i_nd.asnumpy()
     indices_j_np = indices_j_nd.asnumpy()
@@ -98,7 +122,7 @@ def test_easier_reduce(*args, **kwargs):
         for j in range(4):
             output_ref[indices_i_np[i]] += input_A_np[i * 4 + j] * input_x_np[indices_j_np[i * 4 + j]]
     
-    print(output_ref)
+    # print(output_ref)
     tvm.testing.assert_allclose(output_y_nd.asnumpy(), output_ref, rtol=1e-5, atol=1e-5)
 
 if __name__ == "__main__":
